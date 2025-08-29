@@ -45,11 +45,13 @@ def rvc_infer(
     cache_key = (rvc_model_path, index_path, fp16)
     if cache_key not in _rvc_cache:
         # Поиск HuBERT (автоматическая загрузка при отсутствии)
+        models_dir = os.path.join(os.path.dirname(__file__), '..', 'models', 'RVC')
+        os.makedirs(models_dir, exist_ok=True)
         if hubert_path is None:
-            hubert_path = os.path.join(os.path.dirname(rvc_model_path), 'hubert_base.pt')
+            hubert_path = os.path.join(models_dir, 'hubert_base.pt')
         if not os.path.exists(hubert_path):
             print(f"[RVC] HuBERT не найден, скачиваем автоматически...")
-            hubert_path = download_model('hubert_base.pt', out_dir=os.path.dirname(hubert_path))
+            hubert_path = download_model('hubert_base.pt', out_dir=models_dir)
         print(f"[RVC] Загрузка HuBERT: {hubert_path}")
         hubert = HubertSoft(hubert_path, device=device)
         print(f"[RVC] Загрузка RVC-модели: {rvc_model_path}")
@@ -70,12 +72,13 @@ def rvc_infer(
     units = hubert(wav16_tensor)
     # 3. Извлечение F0 (pitch)
     if f0_method == 'rmvpe':
+        models_dir = os.path.join(os.path.dirname(__file__), '..', 'models', 'RVC')
+        os.makedirs(models_dir, exist_ok=True)
         if rmvpe_model_path is None:
-            # Автоматическая подстановка и загрузка rmvpe.pt
-            rmvpe_model_path = os.path.join(os.path.dirname(rvc_model_path), 'rmvpe.pt')
+            rmvpe_model_path = os.path.join(models_dir, 'rmvpe.pt')
         if not os.path.exists(rmvpe_model_path):
             print(f"[RVC] RMVPE не найден, скачиваем автоматически...")
-            rmvpe_model_path = download_model('rmvpe.pt', out_dir=os.path.dirname(rmvpe_model_path))
+            rmvpe_model_path = download_model('rmvpe.pt', out_dir=models_dir)
         f0 = extract_f0_rmvpe(wav, sr, rmvpe_model_path, device=device)
     else:
         f0 = extract_f0(wav, sr, method=f0_method, device=device)

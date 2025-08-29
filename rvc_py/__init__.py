@@ -1,1 +1,1 @@
-from .rvc_infer import rvc_infer, RVCInfer
+from .rvc_infer import rvc_infer

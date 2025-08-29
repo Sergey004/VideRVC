@@ -9,7 +9,12 @@ import torch.nn.functional as F
 class HubertSoft(nn.Module):
     def __init__(self, hubert_path, device='cpu'):
         super().__init__()
-        checkpoint = torch.load(hubert_path, map_location=device)
+        # PyTorch >=2.6: weights_only=True по умолчанию, но HuBERT требует False
+        try:
+            checkpoint = torch.load(hubert_path, map_location=device, weights_only=False)
+        except TypeError:
+            # Для старых версий PyTorch
+            checkpoint = torch.load(hubert_path, map_location=device)
         self.model = checkpoint['model']
         self.model.eval()
         self.device = device
