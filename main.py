@@ -1,3 +1,4 @@
+from rvc_py import rvc_infer
 # --- Seed utils ---
 import random
 
@@ -225,6 +226,8 @@ def main():
     parser.add_argument('--top-p', type=float, default=0.95, help='Top-p sampling (default: 0.95)')
     parser.add_argument('--top-k', type=int, default=0, help='Top-k sampling (default: 0)')
     parser.add_argument('--rvc-model', type=str, default=None, help='Path to RVC model (.pth)')
+    parser.add_argument('--rvc-index', type=str, default=None, help='Path to RVC Faiss index (.index)')
+    parser.add_argument('--rvc-index-rate', type=float, default=0.0, help='Retrieval blending rate (0.0-1.0)')
     parser.add_argument('--out', type=str, required=True, help='Output wav file')
     parser.add_argument('--model-path', type=str, required=True, help='Path to VibeVoice model (или короткое имя)')
     parser.add_argument('--tokenizer-path', type=str, required=False, help='Path to VibeVoice tokenizer.json (или короткое имя, по умолчанию подбирается по модели)')
@@ -260,7 +263,16 @@ def main():
         cfg_scale=args.cfg_scale, steps=args.steps, temperature=args.temperature,
         top_p=args.top_p, top_k=args.top_k, device=args.device
     )
-    # Сохраняем только результат VibeVoice
+    # Post-process через RVC, если указан путь к модели
+    if args.rvc_model:
+        print(f"[INFO] Post-process через RVC: {args.rvc_model}")
+        rvc_kwargs = dict(device=args.device)
+        if args.rvc_index:
+            rvc_kwargs['index_path'] = args.rvc_index
+        if args.rvc_index_rate:
+            rvc_kwargs['index_rate'] = args.rvc_index_rate
+        wav, sr = rvc_infer(wav, sr, args.rvc_model, **rvc_kwargs)
+    # Сохраняем результат
     wavfile.write(args.out, sr, wav.T if wav.ndim > 1 else wav)
 
 if __name__ == '__main__':

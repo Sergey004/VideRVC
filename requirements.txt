@@ -12,3 +12,4 @@ safetensors
 tqdm
 diffusers
 librosa
+crepe
