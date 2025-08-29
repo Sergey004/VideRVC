@@ -3,7 +3,7 @@ import torch
 import numpy as np
 import librosa
 import os
-from .hubert_model import HubertSoft
+from .hubert_contentvec import Hubert
 from .rvc_model import RVCModel
 from .f0_extractor import extract_f0
 from .rmvpe_extractor import extract_f0_rmvpe
@@ -52,8 +52,8 @@ def rvc_infer(
         if not os.path.exists(hubert_path):
             print(f"[RVC] HuBERT не найден, скачиваем автоматически...")
             hubert_path = download_model('hubert_base.pt', out_dir=models_dir)
-        print(f"[RVC] Загрузка HuBERT: {hubert_path}")
-        hubert = HubertSoft(hubert_path, device=device)
+        print(f"[RVC] Загрузка HuBERT (ContentVec): {hubert_path}")
+        hubert = Hubert(hubert_path, device=device)
         print(f"[RVC] Загрузка RVC-модели: {rvc_model_path}")
         rvc = RVCModel(rvc_model_path, device=device, index_path=index_path, fp16=fp16)
         if index_path and index_rate > 0.0:

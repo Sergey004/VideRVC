@@ -13,9 +13,20 @@ class HubertSoft(nn.Module):
         try:
             checkpoint = torch.load(hubert_path, map_location=device, weights_only=False)
         except TypeError:
-            # Для старых версий PyTorch
             checkpoint = torch.load(hubert_path, map_location=device)
-        self.model = checkpoint['model']
+        # Если это state_dict (OrderedDict), загружаем в HuBERT из fairseq
+        if isinstance(checkpoint, dict) and 'model' in checkpoint:
+            self.model = checkpoint['model']
+        elif isinstance(checkpoint, dict):
+            try:
+                from fairseq.models.hubert import HubertModel
+                # Важно: task=None, но модель должна быть создана с правильным config
+                self.model = HubertModel.build_model({'w2v_path': hubert_path}, task=None)
+                self.model.load_state_dict(checkpoint)
+            except Exception as e:
+                raise RuntimeError(f"Не удалось загрузить HuBERT из state_dict: {e}\nУбедитесь, что fairseq установлен и версия модели совместима.")
+        else:
+            raise RuntimeError("Не удалось распознать формат чекпоинта HuBERT. Проверьте файл или используйте другой.")
         self.model.eval()
         self.device = device
         self.model.to(device)
