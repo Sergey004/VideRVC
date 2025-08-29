@@ -1,61 +1,55 @@
-# VibeVoice + RVC Speech Generation Service
+# VibeVoice + RVC Speech Generation Service (RVC is broken)
 
-## Описание
+## Description
 
-Локальный CLI и REST API для генерации речи по тексту с помощью VibeVoice и опциональной обработки через RVC (Voice Conversion).
+Local CLI and REST API for text-to-speech generation using VibeVoice and optional processing via RVC (Voice Conversion). 
 
 ---
 
 ## CLI
 
-Пример запуска:
+Example of execution:
 
 ```
-python main.py \
-  --text "Пример текста" \
-  --reference-audio ref.wav \
-  --model-path /path/to/vibevoice_model \
-  --tokenizer-path /path/to/tokenizer.json \
-  --out output.wav \
-  [--rvc-model /path/to/rvc.pth]
+ main.py --text "Hello world" --reference-audio reference.wav --model-path 1.5B --out output.wav [--rvc-model rvc.pth]
 ```
 
-**Параметры:**
-- `--text` — текст для синтеза
-- `--reference-audio` — эталонный голос (wav)
-- `--model-path` — путь к модели VibeVoice
-- `--tokenizer-path` — путь к tokenizer.json
-- `--out` — выходной wav-файл
-- `--rvc-model` — (опционально) путь к модели RVC
-- Остальные параметры см. `--help`
+**Parameters:**
+- `--text` — text for synthesis
+- `--reference-audio` — reference voice (wav)
+- `--model-path` — path to the VibeVoice model
+- `--tokenizer-path` — path to tokenizer.json
+- `--out` — output wav file
+- `--rvc-model` — (optional) path to RVC model
+- For other parameters, see `--help`
 
 ---
 
-## REST API (FastAPI)
+## REST API (FastAPI) (WIP)
 
-Запуск сервера:
+Starting the server:
 
 ```
 docker build -t vibevoice-rvc .
 docker run -p 8000:8000 vibevoice-rvc
 ```
 
-### Эндпоинты:
-- `POST /generate` — генерация речи (VibeVoice)
-- `POST /convert` — обработка WAV через RVC
-- `POST /pipeline` — полный пайплайн (VibeVoice → RVC)
+### Endpoints:
+- `POST /generate` — speech generation (VibeVoice)
+- `POST /convert` — WAV processing via RVC
+- `POST /pipeline` — full pipeline (VibeVoice → RVC)
 
-Примеры запросов см. в Swagger UI: http://localhost:8000/docs
+For request examples, see Swagger UI: http://localhost:8000/docs
 
 ---
 
-## Требования
+## Requirements
 - Python 3.10+
-- CUDA (для ускорения, опционально)
+- CUDA (for acceleration, optional)
 - ffmpeg
 
 ---
 
-## Примечания
-- Все вычисления локальные, интернет не требуется.
-- Для поддержки разных голосов используйте разные reference audio и/или RVC-модели.
+## Notes
+- All computations are local, no internet connection required.
+- To support different voices, use different reference audio and/or RVC models.
