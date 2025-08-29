@@ -21,3 +21,4 @@ models/*
 *.wav
 *.pt
 *.onnx
+tts-test.txt
