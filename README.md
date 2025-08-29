@@ -15,10 +15,9 @@ Example of execution:
 ```
 
 **Parameters:**
-- `--text` — text for synthesis
+- `--text` — text for synthesis or `--text-file` to read from file
 - `--reference-audio` — reference voice (wav)
 - `--model-path` — path to the VibeVoice model
-- `--tokenizer-path` — path to tokenizer.json
 - `--out` — output wav file
 - `--rvc-model` — (optional) path to RVC model
 - For other parameters, see `--help`
