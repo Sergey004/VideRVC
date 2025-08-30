@@ -5,12 +5,15 @@ import torch.nn as nn
 import numpy as np
 import os
 import fairseq
+from fairseq.data.dictionary import Dictionary
+import torch.serialization
+
+torch.serialization.add_safe_globals([Dictionary])
 
 class Hubert(nn.Module):
     def __init__(self, ckpt_path, device='cpu'):
         super().__init__()
-        # PyTorch >=2.6: weights_only=True по умолчанию, но HuBERT требует False
-        models, cfg, task = fairseq.checkpoint_utils.load_model_ensemble_and_task([ckpt_path])
+        models, cfg, task = fairseq.checkpoint_utils.load_model_ensemble_and_task([ckpt_path], suffix="")
         self.model = models[0]
         self.model.eval()
         self.device = device

@@ -15,8 +15,9 @@ def extract_f0(wav, sr, method='crepe', device='cpu'):
             raise ImportError('Для F0 extraction требуется pip install crepe')
         wav16 = librosa.resample(wav, orig_sr=sr, target_sr=16000)
         wav16 = wav16.astype(np.float32)
-        f0, _, _ = crepe.predict(wav16, 16000, viterbi=True, step_size=10)
-        f0 = f0.squeeze()
+        time, f0, confidence, activation = crepe.predict(wav16, 16000, viterbi=True, step_size=10)
+
+        print(f"Shape of f0 before return: {f0.shape}")
         return f0
     else:
         raise NotImplementedError(f'F0 extraction method {method} не поддерживается')

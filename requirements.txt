@@ -12,4 +12,6 @@ tqdm
 diffusers
 librosa
 crepe
-fairseq
+fairseq@git+https://github.com/MisileLab/fairseq-butter
+tensorboardX
+tensorflow
