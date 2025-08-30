@@ -1,6 +1,7 @@
-from rvc_py import rvc_infer
+
 # --- Seed utils ---
 import random
+from rvc_py.rvc_infer import rvc_infer
 
 def set_vibevoice_seed(seed: int):
     """Sets the seed for torch, numpy, and random, handling large seeds for numpy."""
@@ -209,12 +210,6 @@ def vibevoice_generate(model, processor, text, reference_audio, cfg_scale=1.3, s
     return wav, 24000
 
 
-
-    # RVC отключён. Заглушка.
-    raise NotImplementedError("RVC конвертация временно отключена. Используйте только VibeVoice.")
-
-
-
 def main():
     parser = argparse.ArgumentParser(description='VibeVoice CLI')
     parser.add_argument('--text', type=str, required=False, help='Text to synthesize')
@@ -271,6 +266,15 @@ def main():
             rvc_kwargs['index_path'] = args.rvc_index
         if args.rvc_index_rate:
             rvc_kwargs['index_rate'] = args.rvc_index_rate
+        # Ensure waveform is 1D float32 numpy array for RVC/ RMVPE
+        if isinstance(wav, torch.Tensor):
+            wav = wav.detach().cpu().numpy()
+        wav = np.asarray(wav)
+        if wav.ndim > 1:
+            wav = np.squeeze(wav)
+        if wav.ndim != 1:
+            wav = wav.reshape(-1)
+        wav = wav.astype(np.float32, copy=False)
         wav, sr = rvc_infer(wav, sr, args.rvc_model, **rvc_kwargs)
     # Сохраняем результат
     wavfile.write(args.out, sr, wav.T if wav.ndim > 1 else wav)

@@ -539,6 +539,7 @@ class RMVPE:
         return f0
 
     def infer(self, audio, sr, thred=0.03):
+        import librosa
         if not torch.is_tensor(audio):
             audio = torch.from_numpy(audio)
         if sr != 16000:
@@ -591,13 +592,7 @@ def extract_f0_rmvpe(wav, sr, rmvpe_model_path, device='cpu'):
     rmvpe = RMVPE(rmvpe_model_path, device=device)
     return rmvpe.infer(wav, sr)
 
-    import librosa
-    import soundfile as sf
 
-    audio, sampling_rate = sf.read(r"C:\Users\liujing04\Desktop\Z\冬之花clip1.wav")
-    if len(audio.shape) > 1:
-        audio = librosa.to_mono(audio.transpose(1, 0))
-    audio_bak = audio.copy()
     if sampling_rate != 16000:
         audio = librosa.resample(audio, orig_sr=sampling_rate, target_sr=16000)
     model_path = r"D:\BaiduNetdiskDownload\RVC-beta-v2-0727AMD_realtime\rmvpe.pt"

@@ -11,7 +11,5 @@ safetensors
 tqdm
 diffusers
 librosa
-crepe
+torchcrepe
 fairseq@git+https://github.com/MisileLab/fairseq-butter
-tensorboardX
-tensorflow

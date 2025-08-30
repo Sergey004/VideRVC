@@ -18,7 +18,7 @@ def rvc_infer(
     rvc_model_path: str,
     device: str = 'cuda',
     hubert_path: str = None,
-    f0_method: str = 'crepe',
+    f0_method: str = 'rmvpe',
     rmvpe_model_path: str = None,
     index_path: str = None,
     index_rate: float = 0.0,

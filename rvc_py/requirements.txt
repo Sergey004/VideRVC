@@ -2,5 +2,5 @@ torch
 numpy
 soundfile
 librosa
-crepe
+
 requests

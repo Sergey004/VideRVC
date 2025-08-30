@@ -9,16 +9,16 @@
 ## Особенности инференса (адаптировано из WebUI RVC)
 
 - **Поддержка sample rate:** 32kHz, 40kHz, 48kHz (определяется по модели, параметр sr).
-- **Параметры инференса:** pitch shift, index rate (retrieval blending), f0 method (crepe/parselmouth/pm/dio), hop size, block size, auto predict f0, fp16/half-precision.
+- **Параметры инференса:** pitch shift, index rate (retrieval blending), f0 method (rmvpe/torchcrepe/parselmouth/pm/dio), hop size, block size, auto predict f0, fp16/half-precision.
 - **Векторный поиск:** поддержка Faiss для retrieval-based voice conversion (ускоряет и улучшает качество).
 - **Гибкая обработка аудио:** автоматическое определение sample rate, hop size, block size.
 - **Архитектура:** модульная — отдельные модули для препроцессинга, извлечения фичей, инференса, поиска.
-- **Зависимости:** torch, faiss, librosa, soundfile, numpy, crepe, parselmouth, onnxruntime, pyworld, scipy.
+- **Зависимости:** torch, faiss, librosa, soundfile, numpy, torchcrepe, parselmouth, onnxruntime, pyworld, scipy.
 
 ## Установка зависимостей
 
 ```
-pip install torch numpy librosa soundfile scipy crepe faiss-cpu parselmouth onnxruntime pyworld
+pip install torch numpy librosa soundfile scipy torchcrepe faiss-cpu parselmouth onnxruntime pyworld
 ```
 
 ## Использование
