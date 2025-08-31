@@ -1,7 +1,7 @@
 
 # --- Seed utils ---
 import random
-from rvc_py.rvc_infer import rvc_infer
+
 
 def set_vibevoice_seed(seed: int):
     """Sets the seed for torch, numpy, and random, handling large seeds for numpy."""
@@ -157,7 +157,7 @@ def load_vibevoice(model_path, tokenizer_path, device='cuda'):
     return model, processor
 
 
-def vibevoice_generate(model, processor, text, reference_audio, cfg_scale=1.3, steps=10, temperature=0.95, top_p=0.95, top_k=0, device='cuda'):
+def vibevoice_generate(model, processor, text, reference_audio, cfg_scale=1.3, steps=10, temperature=0.95, top_p=0.95, top_k=0, device='cuda', do_sample=True):
     # Reference audio: path to wav file
     ref_audio, sr = preprocess_reference_audio(reference_audio, target_sr=24000)
     # Prepare input for processor
@@ -179,7 +179,7 @@ def vibevoice_generate(model, processor, text, reference_audio, cfg_scale=1.3, s
     # Seed (опционально)
     # set_vibevoice_seed(seed) # Вызывать из main
     model.set_ddpm_inference_steps(num_steps=steps)
-    generation_config = {'do_sample': True, 'temperature': temperature, 'top_p': top_p}
+    generation_config = {'do_sample': do_sample, 'temperature': temperature, 'top_p': top_p}
     if top_k > 0:
         generation_config['top_k'] = top_k
     # Аппаратные оптимизации для eager
@@ -227,6 +227,8 @@ def main():
     parser.add_argument('--model-path', type=str, required=True, help='Path to VibeVoice model (or short name)')
     parser.add_argument('--tokenizer-path', type=str, required=False, help='Path to VibeVoice tokenizer.json (or short name, default is chosen by model)')
     parser.add_argument('--device', type=str, default='cuda', help='Device to use for computation')
+    parser.add_argument('--do_sample', action='store_true', help='Включить sampling (по умолчанию False)')
+    parser.add_argument('--seed', type=int, default=0, help='Seed для генерации (0 = случайный)')
     args = parser.parse_args()
 
     # Получить текст: либо из файла, либо из аргумента
@@ -250,15 +252,17 @@ def main():
     # Если текст не содержит 'Speaker', добавить автоматически для одного говорящего
     if not any(s in text for s in ["Speaker 1:", "Speaker 2:", "Speaker 3:", "Speaker 4:"]):
         text = f"Speaker 1: {text}"
-    # Seed (0 = random)
-    set_vibevoice_seed(0)
+    # Seed
+    set_vibevoice_seed(args.seed)
     model, processor = load_vibevoice(args.model_path, tokenizer_path, device=args.device)
     wav, sr = vibevoice_generate(
         model, processor, text, args.reference_audio,
         cfg_scale=args.cfg_scale, steps=args.steps, temperature=args.temperature,
-        top_p=args.top_p, top_k=args.top_k, device=args.device
+        top_p=args.top_p, top_k=args.top_k, device=args.device,
+        do_sample=args.do_sample
     )
     # Post-process через RVC, если указан путь к модели
+    from rvc_py.rvc_infer import rvc_infer
     if args.rvc_model:
         print(f"[INFO] Post-process через RVC: {args.rvc_model}")
         rvc_kwargs = dict(device=args.device)
