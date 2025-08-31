@@ -224,8 +224,8 @@ def main():
     parser.add_argument('--rvc-index', type=str, default=None, help='Path to RVC Faiss index (.index)')
     parser.add_argument('--rvc-index-rate', type=float, default=0.0, help='Retrieval blending rate (0.0-1.0)')
     parser.add_argument('--out', type=str, required=True, help='Output wav file')
-    parser.add_argument('--model-path', type=str, required=True, help='Path to VibeVoice model (или короткое имя)')
-    parser.add_argument('--tokenizer-path', type=str, required=False, help='Path to VibeVoice tokenizer.json (или короткое имя, по умолчанию подбирается по модели)')
+    parser.add_argument('--model-path', type=str, required=True, help='Path to VibeVoice model (or short name)')
+    parser.add_argument('--tokenizer-path', type=str, required=False, help='Path to VibeVoice tokenizer.json (or short name, default is chosen by model)')
     parser.add_argument('--device', type=str, default='cuda', help='Device to use for computation')
     args = parser.parse_args()
 
