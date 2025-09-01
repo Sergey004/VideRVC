@@ -281,6 +281,7 @@ def main():
         wav = wav.astype(np.float32, copy=False)
         wav, sr = rvc_infer(wav, sr, args.rvc_model, **rvc_kwargs)
     # Сохраняем результат
+    print(f"[INFO] Saved output to {args.out}")
     wavfile.write(args.out, sr, wav.T if wav.ndim > 1 else wav)
 
 if __name__ == '__main__':

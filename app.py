@@ -1,3 +1,10 @@
+# --- Запуск сервера при запуске файла напрямую ---
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)
+import soundfile as sf
+import librosa
+import torch
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTasks
 from fastapi.responses import FileResponse, JSONResponse
 import tempfile
@@ -24,7 +31,9 @@ MODEL_CACHE = {}
 def health():
     return {"status": "ok"}
 # Server-side storage for reference audios
-REF_STORAGE_DIR = os.path.join(os.getcwd(), "reference_storage")
+
+# Используем новую папку для хранения reference
+REF_STORAGE_DIR = os.path.join(os.getcwd(), "voices")
 os.makedirs(REF_STORAGE_DIR, exist_ok=True)
 
 def get_vv_model(model_path, tokenizer_path, device):
@@ -38,15 +47,85 @@ def get_temp_file(suffix='.wav'):
     os.close(fd)
     return path
 
+
+# --- Вспомогательные функции из main.py ---
+
+
+def preprocess_reference_audio(audio_path, target_sr=24000):
+    import numpy as np
+    audio, sr = sf.read(audio_path)
+    # Convert to mono
+    if audio.ndim > 1:
+        audio = np.mean(audio, axis=1)
+    # Remove NaN/Inf
+    if np.any(np.isnan(audio)) or np.any(np.isinf(audio)):
+        audio = np.nan_to_num(audio, nan=0.0, posinf=0.0, neginf=0.0)
+    # Normalize extreme values
+    max_val = np.abs(audio).max()
+    if max_val > 10.0:
+        audio = audio / max_val
+    # Resample if needed
+    if sr != target_sr:
+        audio = librosa.resample(audio, orig_sr=sr, target_sr=target_sr)
+        sr = target_sr
+    # Final check after resampling
+    if np.any(np.isnan(audio)) or np.any(np.isinf(audio)):
+        audio = np.nan_to_num(audio, nan=0.0, posinf=0.0, neginf=0.0)
+    # Convert to float32
+    if audio.dtype != np.float32:
+        audio = audio.astype(np.float32)
+    # Normalize if values outside [-1, 1]
+    max_abs = np.max(np.abs(audio))
+    if max_abs > 1.01:
+        audio = audio / max_abs
+    return audio, sr
+
+def postprocess_rvc(wav, sr, rvc_model, device='cuda', index_path=None, index_rate=None):
+    from rvc_py.rvc_infer import rvc_infer
+    rvc_kwargs = dict(device=device)
+    if index_path:
+        rvc_kwargs['index_path'] = index_path
+    if index_rate:
+        rvc_kwargs['index_rate'] = index_rate
+    if isinstance(wav, torch.Tensor):
+        wav = wav.detach().cpu().numpy()
+    wav = np.asarray(wav)
+    if wav.ndim > 1:
+        wav = np.squeeze(wav)
+    if wav.ndim != 1:
+        wav = wav.reshape(-1)
+    wav = wav.astype(np.float32, copy=False)
+    return rvc_infer(wav, sr, rvc_model, **rvc_kwargs)
+
 # Helper: resolve reference_id to stored file path
+
+# Возвращает путь к reference и (если есть) путь к RVC из .conf
+
+# Возвращает путь к reference и (если есть) пути к RVC model и index из .conf
 def resolve_reference_id(ref_id: str):
     try:
         for name in os.listdir(REF_STORAGE_DIR):
-            if name.startswith(ref_id):
-                return os.path.join(REF_STORAGE_DIR, name)
+            if name.startswith(ref_id) and not name.endswith('.conf'):
+                ref_path = os.path.join(REF_STORAGE_DIR, name)
+                conf_path = ref_path + '.conf'
+                rvc_model_path = None
+                rvc_index_path = None
+                if os.path.exists(conf_path):
+                    with open(conf_path, 'r', encoding='utf-8') as f:
+                        for line in f:
+                            line = line.strip()
+                            if not line or line.startswith('#'):
+                                continue
+                            if line.lower().startswith('model:'):
+                                rvc_model_path = line.split(':',1)[1].strip()
+                            elif line.lower().startswith('index:'):
+                                rvc_index_path = line.split(':',1)[1].strip()
+                            elif rvc_model_path is None:
+                                rvc_model_path = line
+                return ref_path, rvc_model_path, rvc_index_path
     except Exception:
         pass
-    return None
+    return None, None, None
 
 # Upload and persist a reference audio on the server (deterministic ID via SHA256)
 @app.post('/reference/upload')
@@ -71,13 +150,19 @@ def list_references():
             path = os.path.join(REF_STORAGE_DIR, name)
             if not os.path.isfile(path):
                 continue
-            # Compute hash to provide a stable ID even for legacy files
-            try:
-                with open(path, 'rb') as f:
-                    data = f.read()
-                sha = hashlib.sha256(data).hexdigest()
-                uid = sha[:32]
-            except Exception:
+            # Хешировать только аудиофайлы (расширения .wav, .mp3, .flac и т.п.)
+            audio_exts = {'.wav', '.mp3', '.flac', '.ogg', '.m4a', '.aac'}
+            ext = os.path.splitext(name)[1].lower()
+            if ext in audio_exts:
+                try:
+                    with open(path, 'rb') as f:
+                        data = f.read()
+                    sha = hashlib.sha256(data).hexdigest()
+                    uid = sha[:32]
+                except Exception:
+                    sha = None
+                    uid = os.path.splitext(name)[0]
+            else:
                 sha = None
                 uid = os.path.splitext(name)[0]
             items.append({
@@ -115,9 +200,15 @@ async def tts_v1_speech(req: SpeechRequest, background_tasks: BackgroundTasks):
     temp_paths = []
     try:
         if req.reference_id:
-            ref_path = resolve_reference_id(req.reference_id)
+            ref_path, conf_rvc_model, conf_rvc_index = resolve_reference_id(req.reference_id)
             if not ref_path or not os.path.exists(ref_path):
                 raise HTTPException(status_code=404, detail="reference_id not found")
+            # Если в конфиге указан путь к RVC, используем его если не задано явно
+            if conf_rvc_model and not req.rvc_model:
+                req.rvc_model = conf_rvc_model
+            # Если в конфиге указан index, используем его
+            if conf_rvc_index:
+                req.rvc_index = conf_rvc_index
         elif req.reference_url:
             # Download to temp
             ref_path = get_temp_file()
@@ -140,7 +231,9 @@ async def tts_v1_speech(req: SpeechRequest, background_tasks: BackgroundTasks):
         out_wav = wav1d
         out_sr = sr
         if req.rvc_model:
-            out_wav, out_sr = rvc_infer(wav1d, sr, req.rvc_model, device=req.device)
+            # Передаем index, если он есть
+            rvc_index = getattr(req, 'rvc_index', None)
+            out_wav, out_sr = rvc_infer(wav1d, sr, req.rvc_model, device=req.device, index_path=rvc_index)
 
         if req.response_format == 'base64':
             # Encode WAV to base64 without writing file
@@ -204,9 +297,13 @@ async def generate(
         with open(ref_path, 'wb') as f:
             f.write(await reference_audio.read())
     elif reference_id:
-        ref_path = resolve_reference_id(reference_id)
+        ref_path, conf_rvc_model, conf_rvc_index = resolve_reference_id(reference_id)
         if not ref_path or not os.path.exists(ref_path):
             raise HTTPException(status_code=404, detail="reference_id not found")
+        if conf_rvc_model:
+            rvc_model = conf_rvc_model
+        if conf_rvc_index:
+            rvc_index = conf_rvc_index
     else:
         raise HTTPException(status_code=422, detail="Provide either reference_audio file or reference_id")
 
@@ -292,9 +389,12 @@ async def pipeline(
         with open(ref_path, 'wb') as f:
             f.write(await reference_audio.read())
     elif reference_id:
-        ref_path = resolve_reference_id(reference_id)
+        ref_path, conf_rvc_model, conf_rvc_index = resolve_reference_id(reference_id)
         if not ref_path or not os.path.exists(ref_path):
             raise HTTPException(status_code=404, detail="reference_id not found")
+        if conf_rvc_model:
+            rvc_model = conf_rvc_model
+        # Можно добавить обработку index при необходимости
     else:
         raise HTTPException(status_code=422, detail="Provide either reference_audio file or reference_id")
 
@@ -311,7 +411,8 @@ async def pipeline(
         if getattr(wav1d, 'ndim', 1) > 1:
             wav1d = np.squeeze(wav1d)
         wav1d = wav1d.astype(np.float32)
-        out_wav, out_sr = rvc_infer(wav1d, sr, rvc_model, device=device)
+        # Передаем index, если он есть
+        out_wav, out_sr = rvc_infer(wav1d, sr, rvc_model, device=device, index_path=locals().get('rvc_index', None))
         wavfile.write(out_path, int(out_sr), out_wav.astype(np.float32))
     except Exception as e:
         if ref_is_temp and ref_path:
@@ -389,9 +490,13 @@ async def pipeline(
         with open(ref_path, 'wb') as f:
             f.write(await reference_audio.read())
     elif reference_id:
-        ref_path = resolve_reference_id(reference_id)
+        ref_path, conf_rvc_model, conf_rvc_index = resolve_reference_id(reference_id)
         if not ref_path or not os.path.exists(ref_path):
             raise HTTPException(status_code=404, detail="reference_id not found")
+        if conf_rvc_model:
+            rvc_model = conf_rvc_model
+        if conf_rvc_index:
+            rvc_index = conf_rvc_index
     else:
         raise HTTPException(status_code=422, detail="Provide either reference_audio file or reference_id")
 
@@ -408,7 +513,8 @@ async def pipeline(
         if getattr(wav1d, 'ndim', 1) > 1:
             wav1d = np.squeeze(wav1d)
         wav1d = wav1d.astype(np.float32)
-        out_wav, out_sr = rvc_infer(wav1d, sr, rvc_model, device=device)
+        # Передаем index, если он есть
+        out_wav, out_sr = postprocess_rvc(wav1d, sr, rvc_model, device=device, index_path=locals().get('rvc_index', None))
         wavfile.write(out_path, int(out_sr), out_wav.astype(np.float32))
     except Exception as e:
         if ref_is_temp and ref_path:
