@@ -81,8 +81,12 @@ MODEL_CONFIGS = {
         "repo_id": "Sergey004/VibeVoice-1.5B",
         "tokenizer_repo": "Qwen/Qwen2.5-1.5B"
     },
-    "7B": {
+    "7B-pt": {
         "repo_id": "Sergey004/VibeVoice-Large-pt",
+        "tokenizer_repo": "Qwen/Qwen2.5-7B"
+    },
+    "7B": {
+        "repo_id": "Sergey004/VibeVoice-Large",
         "tokenizer_repo": "Qwen/Qwen2.5-7B"
     },
     # Человекочитаемые имена (как в ComfyUI)
@@ -92,6 +96,10 @@ MODEL_CONFIGS = {
     },
     "VibeVoice-Large-pt": {
         "repo_id": "Sergey004/VibeVoice-Large-pt",
+        "tokenizer_repo": "Qwen/Qwen2.5-7B"
+    },
+    "VibeVoice-Large": {
+        "repo_id": "Sergey004/VibeVoice-Large",
         "tokenizer_repo": "Qwen/Qwen2.5-7B"
     },
 }
