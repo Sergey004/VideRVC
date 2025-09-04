@@ -78,20 +78,20 @@ from huggingface_hub import snapshot_download, hf_hub_download
 MODEL_CONFIGS = {
     # Короткие имена
     "1.5B": {
-        "repo_id": "microsoft/VibeVoice-1.5B",
+        "repo_id": "Sergey004/VibeVoice-1.5B",
         "tokenizer_repo": "Qwen/Qwen2.5-1.5B"
     },
     "7B": {
-        "repo_id": "WestZhang/VibeVoice-Large-pt",
+        "repo_id": "Sergey004/VibeVoice-Large-pt",
         "tokenizer_repo": "Qwen/Qwen2.5-7B"
     },
     # Человекочитаемые имена (как в ComfyUI)
     "VibeVoice-1.5B": {
-        "repo_id": "microsoft/VibeVoice-1.5B",
+        "repo_id": "Sergey004/VibeVoice-1.5B",
         "tokenizer_repo": "Qwen/Qwen2.5-1.5B"
     },
     "VibeVoice-Large-pt": {
-        "repo_id": "WestZhang/VibeVoice-Large-pt",
+        "repo_id": "Sergey004/VibeVoice-Large-pt",
         "tokenizer_repo": "Qwen/Qwen2.5-7B"
     },
 }

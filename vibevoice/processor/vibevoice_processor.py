@@ -57,8 +57,8 @@ class VibeVoiceProcessor:
         import os
         import json
         from .vibevoice_tokenizer_processor import VibeVoiceTokenizerProcessor
-        from vibevoice.modular.modular_vibevoice_text_tokenizer import (
-            VibeVoiceTextTokenizer, 
+        from ..modular.modular_vibevoice_text_tokenizer import (
+            VibeVoiceTextTokenizer,
             VibeVoiceTextTokenizerFast
         )
         
