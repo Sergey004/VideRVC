@@ -1,4 +1,4 @@
-# VibeVoice + RVC Speech Generation Service (RVC is broken)
+# VibeVoice + RVC Speech Generation Service
 
 ## Description
 
