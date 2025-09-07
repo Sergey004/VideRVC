@@ -11,6 +11,10 @@
     "repo_id": "Sergey004/VibeVoice-Large",
     "tokenizer_repo": "Qwen/Qwen2.5-7B"
   },
+  "7B-4bit": {
+    "repo_id": "Dannidee/VibeVoice7b-low-vram/4bit",
+    "tokenizer_repo": "Qwen/Qwen2.5-7B"
+  },
   "VibeVoice-1.5B": {
     "repo_id": "Sergey004/VibeVoice-1.5B",
     "tokenizer_repo": "Qwen/Qwen2.5-1.5B"

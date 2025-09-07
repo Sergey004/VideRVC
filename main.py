@@ -94,9 +94,7 @@ from vibevoice.modular.modular_vibevoice_text_tokenizer import VibeVoiceTextToke
 
 
 def resolve_model_shortcut(model_path, tokenizer_path):
-    """
-    Если model_path или tokenizer_path — короткое или человекочитаемое имя (1.5B, 7B, VibeVoice-1.5B, VibeVoice-Large-pt), подставить repo_id и tokenizer_repo.
-    """
+    """Если model_path или tokenizer_path — короткое или человекочитаемое имя (1.5B, 7B, VibeVoice-1.5B, VibeVoice-Large-pt), подставить repo_id и tokenizer_repo."""
     if model_path in MODEL_CONFIGS:
         model_path = MODEL_CONFIGS[model_path]["repo_id"]
     if tokenizer_path in MODEL_CONFIGS:
@@ -104,10 +102,7 @@ def resolve_model_shortcut(model_path, tokenizer_path):
     return model_path, tokenizer_path
 
 def download_if_hf(model_path, tokenizer_path, models_dir="models"):
-    """
-    Если путь похож на huggingface repo (например, repo_id или repo_id:path), скачать в models_dir.
-    Возвращает локальные пути к model_path и tokenizer_path.
-    """
+    """Если путь похож на huggingface repo (например, repo_id или repo_id:path), скачать в models_dir. Возвращает локальные пути к model_path и tokenizer_path."""
     os.makedirs(models_dir, exist_ok=True)
     def is_hf_repo(p):
         # repo_id или hf://repo_id
@@ -221,7 +216,9 @@ def main():
     # Получить текст: либо из файла, либо из аргумента
     if args.text_file:
         with open(args.text_file, encoding="utf-8") as f:
-            text = f.read().strip()
+            raw_text = f.read()
+        # Convert multi-line text to a single line with spaces between sentences
+        text = ' '.join(raw_text.split())
     elif args.text:
         text = args.text.strip()
     else:
