@@ -1,7 +1,6 @@
 
 # --- Seed utils ---
 import random
-from rvc_py.rvc_infer import rvc_infer
 
 
 def set_vibevoice_seed(seed: int):
