@@ -165,7 +165,17 @@ def load_vibevoice(model_path, tokenizer_path, device='cuda'):
     tokenizer = VibeVoiceTextTokenizerFast(tokenizer_file=tokenizer_path)
     audio_processor = VibeVoiceTokenizerProcessor()
     processor = VibeVoiceProcessor(tokenizer=tokenizer, audio_processor=audio_processor)
-    model = VibeVoiceForConditionalGenerationInference.from_pretrained(model_path, device_map=device)
+    # torch_dtype: bfloat16 для моделей, где это требуется
+    import torch
+    torch_dtype = None
+    # Проверяем по имени модели или конфигу
+    if ("4bit" in model_path or "bfloat16" in model_path):
+        torch_dtype = torch.bfloat16
+    # Можно добавить проверку по конфигу, если потребуется
+    if torch_dtype:
+        model = VibeVoiceForConditionalGenerationInference.from_pretrained(model_path, device_map=device, torch_dtype=torch_dtype)
+    else:
+        model = VibeVoiceForConditionalGenerationInference.from_pretrained(model_path, device_map=device)
     model.eval()
     return model, processor
 
@@ -200,7 +210,10 @@ def vibevoice_generate(model, processor, text, reference_audio, cfg_scale=1.3, s
         torch.backends.cuda.matmul.allow_tf32 = False
         torch.backends.cudnn.allow_tf32 = False
         torch.cuda.empty_cache()
-        model = model.float()
+        # Не приводим к float, если модель квантована (например, 4bit)
+        is_quantized = hasattr(model, 'quantization_method') or hasattr(model, 'quantize_config') or hasattr(model, 'weight_dtype')
+        if not is_quantized:
+            model = model.float()
         processed_inputs = {}
         for k, v in inputs.items():
             if isinstance(v, torch.Tensor):
