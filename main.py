@@ -101,6 +101,24 @@ def resolve_model_shortcut(model_path, tokenizer_path):
         tokenizer_path = MODEL_CONFIGS[tokenizer_path]["tokenizer_repo"]
     return model_path, tokenizer_path
 
+
+def _split_hf_repo(path: str):
+    """
+    Split a string that may contain a sub‑folder.
+    Example:
+        "username/repo/subdir" → ("username/repo", "subdir")
+        "username/repo"        → ("username/repo", "")
+    """
+    parts = path.split("/")
+    if len(parts) > 2:
+        repo_id = "/".join(parts[:2])
+        sub_path = "/".join(parts[2:])
+    else:
+        repo_id = path
+        sub_path = ""
+    return repo_id, sub_path
+
+
 def download_if_hf(model_path, tokenizer_path, models_dir="models"):
     """Если путь похож на huggingface repo (например, repo_id или repo_id:path), скачать в models_dir. Возвращает локальные пути к model_path и tokenizer_path."""
     os.makedirs(models_dir, exist_ok=True)
@@ -111,13 +129,18 @@ def download_if_hf(model_path, tokenizer_path, models_dir="models"):
     model_path, tokenizer_path = resolve_model_shortcut(model_path, tokenizer_path)
     # Model
     if is_hf_repo(model_path):
-        repo_id = model_path.replace("hf://", "")
+        repo_id_full = model_path.replace("hf://", "")
+        repo_id, sub_path = _split_hf_repo(repo_id_full)
         local_dir = os.path.join(models_dir, repo_id.replace("/", "__"))
-        index_file = os.path.join(local_dir, "model.safetensors.index.json")
-        if not os.path.exists(index_file):
+        download_dir = local_dir
+        if not os.path.exists(local_dir):
             print(f"Downloading VibeVoice model: {repo_id}...")
             snapshot_download(repo_id=repo_id, local_dir=local_dir)
-        model_path = local_dir
+        if sub_path:
+            model_path = os.path.join(local_dir, sub_path)
+        else:
+            model_path = local_dir
+        index_file = os.path.join(model_path, "model.safetensors.index.json")
     # Tokenizer
     if is_hf_repo(tokenizer_path):
         repo_id = tokenizer_path.replace("hf://", "")
