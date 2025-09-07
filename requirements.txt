@@ -1,5 +1,5 @@
 torch>=2.0.0
-transformers>=4.36.0
+transformers==4.55.4
 huggingface_hub
 soundfile
 numpy
