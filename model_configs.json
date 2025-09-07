@@ -12,7 +12,8 @@
     "tokenizer_repo": "Qwen/Qwen2.5-7B"
   },
   "7B-4bit": {
-    "repo_id": "Dannidee/VibeVoice7b-low-vram/4bit",
+    "repo_id": "Dannidee/VibeVoice7b-low-vram",
+    "subfolder": "4bit",
     "tokenizer_repo": "Qwen/Qwen2.5-7B"
   }
 }

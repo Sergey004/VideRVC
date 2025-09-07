@@ -126,8 +126,13 @@ def download_if_hf(model_path, tokenizer_path, models_dir="models"):
         # repo_id или hf://repo_id
         return (p.startswith("hf://") or (not os.path.exists(p) and len(p.split("/"))==2))
     # Поддержка коротких имён
+    orig_model_path, orig_tokenizer_path = model_path, tokenizer_path
     model_path, tokenizer_path = resolve_model_shortcut(model_path, tokenizer_path)
     # Model
+    subfolder = None
+    # Если model_path был коротким именем, ищем subfolder в конфиге
+    if orig_model_path in MODEL_CONFIGS and "subfolder" in MODEL_CONFIGS[orig_model_path]:
+        subfolder = MODEL_CONFIGS[orig_model_path]["subfolder"]
     if is_hf_repo(model_path):
         repo_id_full = model_path.replace("hf://", "")
         repo_id, sub_path = _split_hf_repo(repo_id_full)
@@ -136,7 +141,10 @@ def download_if_hf(model_path, tokenizer_path, models_dir="models"):
         if not os.path.exists(local_dir):
             print(f"Downloading VibeVoice model: {repo_id}...")
             snapshot_download(repo_id=repo_id, local_dir=local_dir)
-        if sub_path:
+        # Если subfolder указан в конфиге, используем его
+        if subfolder:
+            model_path = os.path.join(local_dir, subfolder)
+        elif sub_path:
             model_path = os.path.join(local_dir, sub_path)
         else:
             model_path = local_dir
