@@ -8,12 +8,12 @@ from rvc_py.rvc_infer import rvc_infer
 def run_rvc_test():
     # --- Configuration --- #
     # IMPORTANT: Replace with your actual model and audio file paths
-    rvc_model_path = "models\RVC\Atreyu_Alcantar\Atreyu_Alcantar_38e_2546s_best_epoch.pth"  # e.g., "./models/your_model.pth"
+    rvc_model_path = "./models/your_model.pth"  # e.g., "./models/your_model.pth"
     audio_input_path = "Record 2025-08-30 at 14h43m05s.wav"  # e.g., "./test_audio.wav"
     f0_method = "rmvpe"
     pitch_shift = 0
     index_rate = 0.5
-    index_path = "models\RVC\Atreyu_Alcantar\added_Atreyu_Alcantar_v2.index"  # set path to .index if available, else leave empty
+    index_path = "./models/your_model.index"  # set path to .index if available, else leave empty
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     if not os.path.exists(rvc_model_path):
