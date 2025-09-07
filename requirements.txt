@@ -14,3 +14,4 @@ librosa
 torchcrepe
 fairseq@git+https://github.com/MisileLab/fairseq-butter
 python-multipart
+hf_xet

@@ -232,7 +232,10 @@ def vibevoice_generate(model, processor, text, reference_audio, cfg_scale=1.3, s
             tokenizer=processor.tokenizer, generation_config=generation_config,
             verbose=False
         )
-    wav = outputs.speech_outputs[0].detach().cpu().numpy()
+    wav_tensor = outputs.speech_outputs[0].detach().cpu()
+    if wav_tensor.dtype == torch.bfloat16:
+        wav_tensor = wav_tensor.to(torch.float32)
+    wav = wav_tensor.numpy()
     return wav, 24000
 
 
