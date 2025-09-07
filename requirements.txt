@@ -16,3 +16,4 @@ fairseq@git+https://github.com/MisileLab/fairseq-butter
 python-multipart
 bitsandbytes
 hf_xet
+faiss-cpu
