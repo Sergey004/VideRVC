@@ -1,536 +1,744 @@
-# --- Запуск сервера при запуске файла напрямую ---
+"""
+FastAPI server for VibeVoice TTS generation.
+
+Endpoints
+---------
+POST /synthesize
+    Accepts multipart/form-data:
+        - text: str (optional, can be provided via text_file)
+        - text_file: UploadFile (optional, plain‑text file containing the text to synthesize)
+        - reference_audio: UploadFile (required, wav or any format supported by soundfile)
+        - model_path: str (required, can be a short name from model_configs.json or a full path / HF repo)
+        - tokenizer_path: str (optional, required for custom models; can be omitted for short names)
+        - cfg_scale: float (default 1.3)
+        - temperature: float (default 0.95)
+        - steps: int (default 10)
+        - top_p: float (default 0.95)
+        - top_k: int (default 0)
+        - device: str (default "cuda")
+        - do_sample: bool (default False)
+        - seed: int (default 0)
+        - rvc_model: str (optional, path to an RVC .pth model)
+        - rvc_index: str (optional, path to an RVC Faiss index)
+        - rvc_index_rate: float (optional, blending rate 0.0‑1.0)
+
+Response
+--------
+StreamingResponse containing a WAV file (audio/wav) with the generated speech.
+"""
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)
-import soundfile as sf
-import librosa
-import torch
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTasks
-from fastapi.responses import FileResponse, JSONResponse
-import tempfile
 import os
-import uuid
+import tempfile
 import io
-import base64
-import urllib.request
+import wave
+import logging
+import json
+import threading
+from collections import OrderedDict
 from typing import Optional
+
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, status, Request
+from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+
+# Импортируем бизнес-логику
+# from main import (
+#     set_vibevoice_seed,
+#     load_vibevoice,
+#     vibevoice_generate,
+# )
+
+# --- HuggingFace Hub ---
+from huggingface_hub import snapshot_download, hf_hub_download
+
+# --- VibeVoice imports ---
+from vibevoice.modular.modeling_vibevoice_inference import VibeVoiceForConditionalGenerationInference
+from vibevoice.processor.vibevoice_processor import VibeVoiceProcessor
+from vibevoice.processor.vibevoice_tokenizer_processor import VibeVoiceTokenizerProcessor
+from vibevoice.modular.modular_vibevoice_text_tokenizer import VibeVoiceTextTokenizerFast
+
+import torch
 import numpy as np
-from scipy.io import wavfile
-import hashlib
-from pydantic import BaseModel, Field
 
-from main import load_vibevoice, vibevoice_generate
-from rvc_py.rvc_infer import rvc_infer
-
-app = FastAPI()
-
-# --- Global cache for models (to avoid reloading) ---
-MODEL_CACHE = {}
-# Health check endpoint
-@app.get('/health')
-def health():
-    return {"status": "ok"}
-# Server-side storage for reference audios
-
-# Используем новую папку для хранения reference
-REF_STORAGE_DIR = os.path.join(os.getcwd(), "voices")
-os.makedirs(REF_STORAGE_DIR, exist_ok=True)
-
-def get_vv_model(model_path, tokenizer_path, device):
-    key = (model_path, tokenizer_path, device)
-    if key not in MODEL_CACHE:
-        MODEL_CACHE[key] = load_vibevoice(model_path, tokenizer_path, device)
-    return MODEL_CACHE[key]
-
-def get_temp_file(suffix='.wav'):
-    fd, path = tempfile.mkstemp(suffix=suffix)
-    os.close(fd)
-    return path
-
-
-# --- Вспомогательные функции из main.py ---
-
-
-def preprocess_reference_audio(audio_path, target_sr=24000):
-    import numpy as np
-    audio, sr = sf.read(audio_path)
-    # Convert to mono
-    if audio.ndim > 1:
-        audio = np.mean(audio, axis=1)
-    # Remove NaN/Inf
-    if np.any(np.isnan(audio)) or np.any(np.isinf(audio)):
-        audio = np.nan_to_num(audio, nan=0.0, posinf=0.0, neginf=0.0)
-    # Normalize extreme values
-    max_val = np.abs(audio).max()
-    if max_val > 10.0:
-        audio = audio / max_val
-    # Resample if needed
-    if sr != target_sr:
-        audio = librosa.resample(audio, orig_sr=sr, target_sr=target_sr)
-        sr = target_sr
-    # Final check after resampling
-    if np.any(np.isnan(audio)) or np.any(np.isinf(audio)):
-        audio = np.nan_to_num(audio, nan=0.0, posinf=0.0, neginf=0.0)
-    # Convert to float32
-    if audio.dtype != np.float32:
-        audio = audio.astype(np.float32)
-    # Normalize if values outside [-1, 1]
-    max_abs = np.max(np.abs(audio))
-    if max_abs > 1.01:
-        audio = audio / max_abs
-    return audio, sr
-
-def postprocess_rvc(wav, sr, rvc_model, device='cuda', index_path=None, index_rate=None):
+# Ленивая загрузка RVC
+def get_rvc_infer():
     from rvc_py.rvc_infer import rvc_infer
-    rvc_kwargs = dict(device=device)
-    if index_path:
-        rvc_kwargs['index_path'] = index_path
-    if index_rate:
-        rvc_kwargs['index_rate'] = index_rate
-    if isinstance(wav, torch.Tensor):
-        wav = wav.detach().cpu().numpy()
+    return rvc_infer
+
+# Логирование
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("VibeVoiceAPI")
+
+# Кэш моделей VibeVoice (LRU) — чтобы не загружать модель при каждом запросе
+VV_CACHE_LOCK = threading.Lock()
+VV_CACHE_MAX = int(os.environ.get("VV_CACHE_MAX", "1"))  # максимум одновременных моделей в VRAM
+VV_MODEL_CACHE: "OrderedDict[str, tuple]" = OrderedDict()
+
+
+def get_vv_model_cached(model_path: str, tokenizer_path: Optional[str], device: str):
+    """Возвращает (model, processor) из кэша или загружает и кэширует.
+    LRU-кэш с ограничением по количеству моделей, чтобы не переполнить VRAM.
+    """
+    key = f"{os.path.abspath(model_path)}::{os.path.abspath(tokenizer_path or '')}::{device}"
+    # Быстрый путь: модель уже в кэше
+    with VV_CACHE_LOCK:
+        if key in VV_MODEL_CACHE:
+            model, processor = VV_MODEL_CACHE.pop(key)
+            VV_MODEL_CACHE[key] = (model, processor)  # move to MRU
+            return model, processor
+
+    # Загрузка вне блокировки (чтобы не держать lock во время длительной операции)
+    model, processor = load_vibevoice(model_path, tokenizer_path or "", device=device)
+
+    # Регистрация в LRU-кэше и при необходимости вытеснение старых
+    with VV_CACHE_LOCK:
+        # Возможно, за время загрузки другой поток уже загрузил эту же модель
+        if key in VV_MODEL_CACHE:
+            cached_model, cached_processor = VV_MODEL_CACHE.pop(key)
+            VV_MODEL_CACHE[key] = (cached_model, cached_processor)
+            try:
+                import torch
+                # Освободим только что загруженный дубликат
+                del model
+                del processor
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception:
+                pass
+            return cached_model, cached_processor
+
+        # Если переполнили бюджет — вытесняем LRU
+        while len(VV_MODEL_CACHE) >= VV_CACHE_MAX and VV_MODEL_CACHE:
+            old_key, (old_model, old_processor) = VV_MODEL_CACHE.popitem(last=False)
+            try:
+                import torch
+                # Перевод на CPU перед удалением помогает аккуратнее освобождать VRAM
+                if hasattr(old_model, "to"):
+                    old_model.to("cpu")
+                del old_model
+                del old_processor
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception:
+                pass
+
+        VV_MODEL_CACHE[key] = (model, processor)
+        return model, processor
+
+
+app = FastAPI(title="VibeVoice TTS API", version="2.0.0")
+
+# CORS (можно ограничить при необходимости)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# --- Эндпоинт для чтения содержимого папки voices ---
+@app.get("/voices", tags=["Files"])
+async def list_voices():
+    """Возвращает список файлов и конфигов в папке voices."""
+    folder = os.path.join(os.getcwd(), "voices")
+    if not os.path.isdir(folder):
+        return JSONResponse(status_code=404, content={"error": {"code": "not_found", "message": "voices folder not found"}})
+    result = []
+    for name in os.listdir(folder):
+        path = os.path.join(folder, name)
+        result.append({
+            "name": name,
+            "path": path,
+            "type": "file" if os.path.isfile(path) else "folder"
+        })
+    return {"voices": result}
+
+
+# --- Эндпоинт для чтения содержимого папки models/RVC ---
+@app.get("/rvc-models", tags=["Files"])
+async def list_rvc_models():
+    """Возвращает список моделей и индексов в папке models/RVC, игнорируя *.pt файлы."""
+    folder = os.path.join(os.getcwd(), "models", "RVC")
+    if not os.path.isdir(folder):
+        return JSONResponse(status_code=404, content={"error": {"code": "not_found", "message": "models/RVC folder not found"}})
+    result = []
+    for name in os.listdir(folder):
+        if name.endswith(".pt"):
+            continue
+        path = os.path.join(folder, name)
+        result.append({
+            "name": name,
+            "path": path,
+            "type": "file" if os.path.isfile(path) else "folder"
+        })
+    return {"rvc_models": result}
+
+@app.get("/healthcheck", tags=["Service"])
+async def healthcheck():
+    """Проверка работоспособности сервера."""
+    return {"status": "ok"}
+
+def resolve_text(text: Optional[str], text_file: Optional[UploadFile]) -> str:
+    """Получить текст для синтеза из строки или файла."""
+    if text_file:
+        raw = text_file.file.read()
+        try:
+            text = raw.decode("utf-8")
+        except Exception:
+            raise HTTPException(status_code=400, detail="Text file must be UTF-8 encoded")
+    if not text:
+        raise HTTPException(status_code=400, detail="No text provided")
+    # Маркер спикера
+    if not any(s in text for s in ["Speaker 1:", "Speaker 2:", "Speaker 3:", "Speaker 4:"]):
+        text = f"Speaker 1: {text}"
+    return text
+
+def save_temp_file(upload: UploadFile) -> str:
+    """Сохраняет загруженный файл во временное хранилище и возвращает путь."""
+    suffix = os.path.splitext(upload.filename)[1] or ".wav"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        tmp.write(upload.file.read())
+        return tmp.name
+
+def synthesize_tts(
+    text: str,
+    reference_audio_path: str,
+    model_path: str,
+    tokenizer_path: Optional[str],
+    cfg_scale: float,
+    temperature: float,
+    steps: int,
+    top_p: float,
+    top_k: int,
+    device: str,
+    do_sample: bool,
+    seed: int,
+) -> tuple:
+    """Генерирует речь через VibeVoice."""
+    set_vibevoice_seed(seed)
+    # model, processor = load_vibevoice(model_path, tokenizer_path or "", device=device)
+    model, processor = get_vv_model_cached(model_path, tokenizer_path or "", device)
+    wav, sr = vibevoice_generate(
+        model,
+        processor,
+        text,
+        reference_audio_path,
+        cfg_scale=cfg_scale,
+        steps=steps,
+        temperature=temperature,
+        top_p=top_p,
+        top_k=top_k,
+        device=device,
+        do_sample=do_sample,
+    )
+    return wav, sr
+
+def postprocess_rvc(
+    wav,
+    sr,
+    rvc_model,
+    device,
+    rvc_index=None,
+    rvc_index_rate=None,
+) -> tuple:
+    """Постобработка голоса через RVC."""
+    rvc_infer = get_rvc_infer()
+    rvc_kwargs = {"device": device}
+    if rvc_index:
+        rvc_kwargs["index_path"] = rvc_index
+    if rvc_index_rate is not None:
+        rvc_kwargs["index_rate"] = rvc_index_rate
+    import numpy as np
     wav = np.asarray(wav)
     if wav.ndim > 1:
         wav = np.squeeze(wav)
-    if wav.ndim != 1:
-        wav = wav.reshape(-1)
     wav = wav.astype(np.float32, copy=False)
-    return rvc_infer(wav, sr, rvc_model, **rvc_kwargs)
+    wav, sr = rvc_infer(wav, sr, rvc_model, **rvc_kwargs)
+    return wav, sr
 
-# Helper: resolve reference_id to stored file path
+def to_wav_bytes(wav, sr) -> bytes:
+    """Преобразует numpy-массив в WAV-байты."""
+    import numpy as np
+    max_abs = np.max(np.abs(wav)) if np.max(np.abs(wav)) != 0 else 1.0
+    wav_int16 = (wav / max_abs * 32767).astype(np.int16)
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sr)
+        wf.writeframes(wav_int16.tobytes())
+    buffer.seek(0)
+    return buffer
 
-# Возвращает путь к reference и (если есть) путь к RVC из .conf
+from fastapi import Body
+from pydantic import BaseModel
 
-# Возвращает путь к reference и (если есть) пути к RVC model и index из .conf
-def resolve_reference_id(ref_id: str):
+class OpenAITTSRequest(BaseModel):
+    model: str
+    input: str
+    voice: Optional[str] = None
+    response_format: Optional[str] = "wav"  # "wav" или "mp3"
+    speed: Optional[float] = 1.0
+    device: Optional[str] = "cuda"
+    seed: Optional[int] = 0
+    rvc_model: Optional[str] = None
+    rvc_index: Optional[str] = None
+    rvc_index_rate: Optional[float] = None
+    # Можно добавить другие параметры OpenAI TTS
+
+@app.post("/v1/audio/speech", tags=["TTS"])
+async def openai_tts(
+    request: OpenAITTSRequest = Body(...),
+):
+    """OpenAI-совместимый TTS эндпоинт."""
+    logger.info(f"/v1/audio/speech called, model={request.model}, voice={request.voice}")
+    temp_files = []
     try:
-        for name in os.listdir(REF_STORAGE_DIR):
-            if name.startswith(ref_id) and not name.endswith('.conf'):
-                ref_path = os.path.join(REF_STORAGE_DIR, name)
-                conf_path = ref_path + '.conf'
-                rvc_model_path = None
-                rvc_index_path = None
-                if os.path.exists(conf_path):
-                    with open(conf_path, 'r', encoding='utf-8') as f:
-                        for line in f:
-                            line = line.strip()
-                            if not line or line.startswith('#'):
-                                continue
-                            if line.lower().startswith('model:'):
-                                rvc_model_path = line.split(':',1)[1].strip()
-                            elif line.lower().startswith('index:'):
-                                rvc_index_path = line.split(':',1)[1].strip()
-                            elif rvc_model_path is None:
-                                rvc_model_path = line
-                return ref_path, rvc_model_path, rvc_index_path
-    except Exception:
-        pass
-    return None, None, None
+        # Маппинг параметров OpenAI -> VibeVoice
+        text = request.input
+        model_path = request.model
+        tokenizer_path = None
 
-# Upload and persist a reference audio on the server (deterministic ID via SHA256)
-@app.post('/reference/upload')
-async def upload_reference(file: UploadFile = File(...)):
-    ext = os.path.splitext(file.filename or '')[1].lower() or '.wav'
-    data = await file.read()
-    # Compute deterministic ID (first 32 hex chars of SHA256)
-    sha = hashlib.sha256(data).hexdigest()
-    uid = sha[:32]
-    save_path = os.path.join(REF_STORAGE_DIR, f"{uid}{ext}")
-    if not os.path.exists(save_path):
-        with open(save_path, 'wb') as f:
-            f.write(data)
-    return {"id": uid, "path": save_path, "sha256": sha}
+        # Resolve model_path and tokenizer_path from model_configs.json
+        try:
+            with open("model_configs.json", "r", encoding="utf-8") as f:
+                model_configs = json.load(f)
+            if request.model in model_configs:
+                config = model_configs[request.model]
+                model_path = config.get("repo_id", request.model)
+                tokenizer_path = config.get("tokenizer_repo")
+                if config.get("subfolder"): # Handle subfolder for 4bit models
+                    model_path = f"{model_path}/{config.get('subfolder')}"
+        except FileNotFoundError:
+            logger.warning("model_configs.json not found. Using model name as path.")
+        except json.JSONDecodeError:
+            logger.warning("Error decoding model_configs.json. Using model name as path.")
 
-# List all stored references and auto-generate IDs for existing files
-@app.get('/reference/list')
-def list_references():
-    items = []
-    try:
-        for name in os.listdir(REF_STORAGE_DIR):
-            path = os.path.join(REF_STORAGE_DIR, name)
-            if not os.path.isfile(path):
-                continue
-            # Хешировать только аудиофайлы (расширения .wav, .mp3, .flac и т.п.)
-            audio_exts = {'.wav', '.mp3', '.flac', '.ogg', '.m4a', '.aac'}
-            ext = os.path.splitext(name)[1].lower()
-            if ext in audio_exts:
-                try:
-                    with open(path, 'rb') as f:
-                        data = f.read()
-                    sha = hashlib.sha256(data).hexdigest()
-                    uid = sha[:32]
-                except Exception:
-                    sha = None
-                    uid = os.path.splitext(name)[0]
-            else:
-                sha = None
-                uid = os.path.splitext(name)[0]
-            items.append({
-                "id": uid,
-                "filename": name,
-                "size": os.path.getsize(path),
-                "path": path,
-                "sha256": sha
-            })
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to list references: {e}")
-    return {"items": items}
+        logger.info(f"Resolved model_path: {model_path}, tokenizer_path: {tokenizer_path}")
 
-# ---------------- OpenAI-like JSON TTS API ----------------
-class SpeechRequest(BaseModel):
-    model: str = Field(default="vibevoice", description="Model identifier, keep 'vibevoice'")
-    input: str = Field(..., description="Text to speak")
-    vv_model_path: str = Field(..., description="Path to VibeVoice model")
-    vv_tokenizer_path: str = Field(..., description="Path to VibeVoice tokenizer")
-    reference_id: Optional[str] = Field(default=None, description="Server-stored reference id")
-    reference_url: Optional[str] = Field(default=None, description="URL to fetch reference audio if not using id")
-    cfg_scale: float = 3.0
-    temperature: float = 1.0
-    steps: int = 42
-    top_p: float = 1.0
-    top_k: int = 0
-    device: str = "cuda"
-    rvc_model: Optional[str] = Field(default=None, description="Optional RVC model path for post-processing")
-    response_format: str = Field(default="wav", description="wav or base64")
+        cfg_scale = 1.3
+        temperature = 0.95
+        steps = 10
+        top_p = 0.95
+        top_k = 0
+        device = request.device or "cuda"
+        do_sample = True
+        seed = request.seed or 0
+        rvc_model = request.rvc_model
+        rvc_index = request.rvc_index
+        rvc_index_rate = request.rvc_index_rate
 
-@app.post('/v1/audio/speech')
-async def tts_v1_speech(req: SpeechRequest, background_tasks: BackgroundTasks):
-    # Acquire reference audio path
-    ref_path = None
-    temp_paths = []
-    try:
-        if req.reference_id:
-            ref_path, conf_rvc_model, conf_rvc_index = resolve_reference_id(req.reference_id)
-            if not ref_path or not os.path.exists(ref_path):
-                raise HTTPException(status_code=404, detail="reference_id not found")
-            # Если в конфиге указан путь к RVC, используем его если не задано явно
-            if conf_rvc_model and not req.rvc_model:
-                req.rvc_model = conf_rvc_model
-            # Если в конфиге указан index, используем его
-            if conf_rvc_index:
-                req.rvc_index = conf_rvc_index
-        elif req.reference_url:
-            # Download to temp
-            ref_path = get_temp_file()
-            urllib.request.urlretrieve(req.reference_url, ref_path)
-            temp_paths.append(ref_path)
+        logger.info(f"RVC model: {rvc_model}, RVC index: {rvc_index}, RVC index rate: {rvc_index_rate}")
+
+        # Для OpenAI TTS voice — это имя голоса из таблицы или прямой путь к эталонному аудио
+        if not request.voice:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "error": {
+                        "code": "missing_voice",
+                        "message": "voice (reference audio or registered voice name) is required"
+                    }
+                }
+            )
+
+        voice_key = request.voice
+        ref_audio_path = None
+        voice_entry = None
+        try:
+            table = load_voice_table()
+        except Exception:
+            table = {}
+
+        if isinstance(table, dict) and voice_key in table and isinstance(table[voice_key], dict):
+            voice_entry = table[voice_key]
+            ref_audio_path = voice_entry.get("path")
+            # Наследуем RVC-параметры из записи, если они не заданы в запросе
+            if not rvc_model and voice_entry.get("rvc_model"):
+                rvc_model = voice_entry.get("rvc_model")
+                if rvc_model.startswith("model: "):
+                    rvc_model = rvc_model[len("model: "):]
+            if not rvc_index and voice_entry.get("rvc_index"):
+                rvc_index = voice_entry.get("rvc_index")
+                if rvc_index.startswith("index: "):
+                    rvc_index = rvc_index[len("index: "):]
+            if rvc_index_rate is None and ("rvc_index_rate" in voice_entry):
+                rvc_index_rate = voice_entry.get("rvc_index_rate")
         else:
-            raise HTTPException(status_code=422, detail="Provide reference_id or reference_url")
+            # Голос не найден в таблице — пробуем трактовать как путь к файлу
+            ref_audio_path = voice_key
 
-        # Load/generate
-        model, processor = get_vv_model(req.vv_model_path, req.vv_tokenizer_path, req.device)
-        wav, sr = vibevoice_generate(
-            model, processor, req.input, ref_path,
-            cfg_scale=req.cfg_scale, steps=req.steps, temperature=req.temperature,
-            top_p=req.top_p, top_k=req.top_k, device=req.device
+        # Проверяем существование файла эталона
+        if not ref_audio_path or not os.path.isfile(ref_audio_path):
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "error": {
+                        "code": "invalid_voice",
+                        "message": f"Reference audio not found: {ref_audio_path}"
+                    }
+                }
+            )
+
+        text_resolved = text
+        if not any(s in text_resolved for s in ["Speaker 1:", "Speaker 2:", "Speaker 3:", "Speaker 4:"]):
+            text_resolved = f"Speaker 1: {text_resolved}"
+
+        wav, sr = synthesize_tts(
+            text_resolved,
+            ref_audio_path,
+            model_path,
+            tokenizer_path,
+            cfg_scale,
+            temperature,
+            steps,
+            top_p,
+            top_k,
+            device,
+            do_sample,
+            seed,
         )
-        wav1d = wav.T if getattr(wav, 'ndim', 1) > 1 else wav
-        if getattr(wav1d, 'ndim', 1) > 1:
-            wav1d = np.squeeze(wav1d)
-        wav1d = wav1d.astype(np.float32)
-        out_wav = wav1d
-        out_sr = sr
-        if req.rvc_model:
-            # Передаем index, если он есть
-            rvc_index = getattr(req, 'rvc_index', None)
-            out_wav, out_sr = rvc_infer(wav1d, sr, req.rvc_model, device=req.device, index_path=rvc_index)
-
-        if req.response_format == 'base64':
-            # Encode WAV to base64 without writing file
-            buf = io.BytesIO()
-            wavfile.write(buf, int(out_sr), out_wav.astype(np.float32))
-            b64 = base64.b64encode(buf.getvalue()).decode('ascii')
-            return JSONResponse({
-                "model": req.model,
-                "format": "wav",
-                "sample_rate": int(out_sr),
-                "audio": b64
-            })
-        # Default: return as audio/wav response file
-        out_path = get_temp_file()
-        temp_paths.append(out_path)
-        wavfile.write(out_path, int(out_sr), out_wav.astype(np.float32))
-        # schedule cleanup
-        for p in temp_paths:
-            background_tasks.add_task(os.remove, p)
-        return FileResponse(out_path, media_type='audio/wav', filename='speech.wav')
-    except HTTPException:
-        # Re-raise HTTPExceptions intact
-        for p in temp_paths:
-            try:
-                os.remove(p)
-            except Exception:
-                pass
-        raise
+        if rvc_model:
+            wav, sr = postprocess_rvc(
+                wav,
+                sr,
+                rvc_model,
+                device,
+                rvc_index,
+                rvc_index_rate,
+            )
+        buffer = to_wav_bytes(wav, sr)
+        filename = f"speech.{request.response_format or 'wav'}"
+        # Пока поддерживается только WAV
+        return StreamingResponse(
+            buffer,
+            media_type="audio/wav",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+    except HTTPException as e:
+        logger.error(f"HTTPException: {e.detail}")
+        return JSONResponse(status_code=e.status_code, content={"error": {"code": "http_exception", "message": e.detail}})
     except Exception as e:
-        # Cleanup temps and propagate error
-        for p in temp_paths:
+        logger.exception("Unexpected error in /v1/audio/speech")
+        return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"error": {"code": "internal_error", "message": str(e)}})
+
+
+VOICES_TABLE_PATH = os.path.join(os.getcwd(), "voices", "voices.json")
+
+
+def load_voice_table() -> dict:
+    if not os.path.exists(VOICES_TABLE_PATH):
+        return {}
+    try:
+        with open(VOICES_TABLE_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def save_voice_table(table: dict) -> None:
+    tmp_path = VOICES_TABLE_PATH + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(table, f, ensure_ascii=False, indent=2)
+    os.replace(tmp_path, VOICES_TABLE_PATH)
+
+
+def auto_populate_voices():
+    logger.info("Auto-populating voices from .wav.conf files...")
+    voices_dir = os.path.join(os.getcwd(), "voices")
+    if not os.path.isdir(voices_dir):
+        logger.warning(f"Voices directory not found: {voices_dir}")
+        return
+
+    current_voice_table = load_voice_table()
+    updated_voice_table = current_voice_table.copy()
+    
+    for filename in os.listdir(voices_dir):
+        if filename.endswith(".wav.conf"):
+            conf_filepath = os.path.join(voices_dir, filename)
+            voice_name = filename.replace(".wav.conf", "")
+            
             try:
-                os.remove(p)
-            except Exception:
-                pass
-        raise HTTPException(status_code=500, detail=f"TTS failed: {e}")
+                with open(conf_filepath, "r", encoding="utf-8") as f:
+                    lines = f.readlines()
+                    if len(lines) >= 2:
+                        rvc_model = lines[0].strip()
+                        rvc_index = lines[1].strip()
+                        
+                        # Assuming the WAV file has the same name as the conf file, but with .wav extension
+                        wav_filepath = os.path.join(voices_dir, voice_name + ".wav")
+                        
+                        # Check if the WAV file exists, if not, skip this entry or log a warning
+                        if not os.path.isfile(wav_filepath):
+                            logger.warning(f"Corresponding WAV file not found for {filename}: {wav_filepath}. Skipping.")
+                            continue
 
-# ---------------------------------------------------------
-
-@app.post('/generate')
-async def generate(
-    text: str = Form(...),
-    reference_audio: UploadFile | None = File(None),
-    reference_id: str | None = Form(None),
-    cfg_scale: float = Form(3.0),
-    temperature: float = Form(1.0),
-    steps: int = Form(42),
-    top_p: float = Form(1.0),
-    top_k: int = Form(0),
-    model_path: str = Form(...),
-    tokenizer_path: str = Form(...),
-    device: str = Form('cuda'),
-    background_tasks: BackgroundTasks = None
-):
-    # Determine source of reference audio
-    ref_is_temp = False
-    ref_path = None
-    if reference_audio is not None:
-        ref_is_temp = True
-        ref_path = get_temp_file()
-        with open(ref_path, 'wb') as f:
-            f.write(await reference_audio.read())
-    elif reference_id:
-        ref_path, conf_rvc_model, conf_rvc_index = resolve_reference_id(reference_id)
-        if not ref_path or not os.path.exists(ref_path):
-            raise HTTPException(status_code=404, detail="reference_id not found")
-        if conf_rvc_model:
-            rvc_model = conf_rvc_model
-        if conf_rvc_index:
-            rvc_index = conf_rvc_index
+                        # Add or update the entry
+                        updated_voice_table[voice_name] = {
+                            "path": wav_filepath,
+                            "rvc_model": rvc_model,
+                            "rvc_index": rvc_index,
+                            "rvc_index_rate": None, # Default to None, can be adjusted if needed
+                            "description": f"Auto-populated from {filename}"
+                        }
+                        logger.info(f"Added/updated voice '{voice_name}' from {filename}")
+                    else:
+                        logger.warning(f"Skipping {filename}: Not enough lines in .wav.conf file.")
+            except Exception as e:
+                logger.error(f"Error processing {filename}: {e}")
+    
+    if updated_voice_table != current_voice_table:
+        save_voice_table(updated_voice_table)
+        logger.info("voices.json updated with auto-populated entries.")
     else:
-        raise HTTPException(status_code=422, detail="Provide either reference_audio file or reference_id")
+        logger.info("No new voices to auto-populate or voices.json is already up-to-date.")
 
-    try:
-        model, processor = get_vv_model(model_path, tokenizer_path, device)
-        wav, sr = vibevoice_generate(
-            model, processor, text, ref_path,
-            cfg_scale=cfg_scale, steps=steps, temperature=temperature,
-            top_p=top_p, top_k=top_k, device=device
-        )
-        out_path = get_temp_file()
-        wav_to_write = wav.T if getattr(wav, 'ndim', 1) > 1 else wav
-        wavfile.write(out_path, sr, wav_to_write.astype(np.float32))
-    except Exception as e:
-        # Cleanup temp input on failure
-        if ref_is_temp and ref_path:
-            try:
-                os.remove(ref_path)
-            except Exception:
-                pass
-        raise HTTPException(status_code=500, detail=f"Generation failed: {e}")
-    # Schedule cleanup after response is sent
-    if background_tasks is not None:
-        if ref_is_temp and ref_path:
-            background_tasks.add_task(os.remove, ref_path)
-        background_tasks.add_task(os.remove, out_path)
-    return FileResponse(out_path, media_type='audio/wav', filename='output.wav')
+@app.on_event("startup")
+async def startup_event():
+    auto_populate_voices()
 
-@app.post('/convert')
-async def convert(
-    audio: UploadFile = File(...),
-    rvc_model: str = Form(...),
-    device: str = Form('cuda'),
-    background_tasks: BackgroundTasks = None
-):
-    # Save input to temp
-    in_path = get_temp_file()
-    with open(in_path, 'wb') as f:
-        f.write(await audio.read())
-    out_path = get_temp_file()
-    try:
-        sr, data = wavfile.read(in_path)
-        if getattr(data, 'ndim', 1) > 1:
-            data = data.T if data.shape[0] < data.shape[1] else data
-            if getattr(data, 'ndim', 1) > 1:
-                data = np.squeeze(data)
-        data = data.astype(np.float32)
-        out_wav, out_sr = rvc_infer(data, sr, rvc_model, device=device)
-        wavfile.write(out_path, int(out_sr), out_wav.astype(np.float32))
-    except Exception as e:
-        try:
-            os.remove(in_path)
-        except Exception:
-            pass
-        raise HTTPException(status_code=500, detail=f"Conversion failed: {e}")
-    if background_tasks is not None:
-        background_tasks.add_task(os.remove, in_path)
-        background_tasks.add_task(os.remove, out_path)
-    return FileResponse(out_path, media_type='audio/wav', filename='converted.wav')
+from pydantic import BaseModel
 
-@app.post('/pipeline')
-async def pipeline(
-    text: str = Form(...),
-    reference_audio: UploadFile | None = File(None),
-    reference_id: str | None = Form(None),
-    cfg_scale: float = Form(3.0),
-    temperature: float = Form(1.0),
-    steps: int = Form(42),
-    top_p: float = Form(1.0),
-    top_k: int = Form(0),
-    model_path: str = Form(...),
-    tokenizer_path: str = Form(...),
-    rvc_model: str = Form(...),
-    device: str = Form('cuda'),
-    background_tasks: BackgroundTasks = None
-):
-    # Determine reference source
-    ref_is_temp = False
-    ref_path = None
-    if reference_audio is not None:
-        ref_is_temp = True
-        ref_path = get_temp_file()
-        with open(ref_path, 'wb') as f:
-            f.write(await reference_audio.read())
-    elif reference_id:
-        ref_path, conf_rvc_model, conf_rvc_index = resolve_reference_id(reference_id)
-        if not ref_path or not os.path.exists(ref_path):
-            raise HTTPException(status_code=404, detail="reference_id not found")
-        if conf_rvc_model:
-            rvc_model = conf_rvc_model
-        # Можно добавить обработку index при необходимости
+
+class VoiceEntry(BaseModel):
+    path: str  # путь к референс-аудио (wav)
+    rvc_model: Optional[str] = None
+    rvc_index: Optional[str] = None
+    rvc_index_rate: Optional[float] = None
+    description: Optional[str] = None
+
+
+@app.get("/voices/table", tags=["Voices"])
+async def voices_table_list():
+    return load_voice_table()
+
+
+@app.post("/voices/table", tags=["Voices"])
+async def voices_table_upsert(name: str = Form(...), path: str = Form(...), rvc_model: Optional[str] = Form(None), rvc_index: Optional[str] = Form(None), rvc_index_rate: Optional[float] = Form(None), description: Optional[str] = Form(None)):
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=400, detail=f"Reference audio not found: {path}")
+    table = load_voice_table()
+    table[name] = {
+        "path": path,
+        "rvc_model": rvc_model,
+        "rvc_index": rvc_index,
+        "rvc_index_rate": rvc_index_rate,
+        "description": description,
+    }
+    save_voice_table(table)
+    return {"ok": True, "name": name, "entry": table[name]}
+
+
+@app.delete("/voices/table/{name}", tags=["Voices"])
+async def voices_table_delete(name: str):
+    table = load_voice_table()
+    if name not in table:
+        raise HTTPException(status_code=404, detail="Voice not found")
+    entry = table.pop(name)
+    save_voice_table(table)
+    return {"ok": True, "name": name, "deleted": entry}
+
+
+@app.get("/voices/table/{name}", tags=["Voices"])
+async def voices_table_get(name: str):
+    table = load_voice_table()
+    if name not in table:
+        raise HTTPException(status_code=404, detail="Voice not found")
+    return table[name]
+
+# --- Model configs (короткие имена) ---
+_MODEL_CONFIGS_PATH = os.path.join(os.path.dirname(__file__), "model_configs.json")
+with open(_MODEL_CONFIGS_PATH, "r", encoding="utf-8") as _f:
+    MODEL_CONFIGS = json.load(_f)
+
+
+# Ленивая загрузка RVC
+def get_rvc_infer():
+    from rvc_py.rvc_infer import rvc_infer
+    return rvc_infer
+
+
+def set_vibevoice_seed(seed: int):
+    """Sets the seed for torch, numpy, and random, handling large seeds for numpy."""
+    if seed == 0:
+        import random
+        seed = random.randint(1, 0xffffffffffffffff)
+    MAX_NUMPY_SEED = 2**32 - 1
+    numpy_seed = seed % MAX_NUMPY_SEED
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    np.random.seed(numpy_seed)
+    import random
+    random.seed(seed)
+
+def resolve_model_shortcut(model_path, tokenizer_path):
+    """Если model_path или tokenizer_path — короткое или человекочитаемое имя (1.5B, 7B, VibeVoice-1.5B, VibeVoice-Large-pt), подставить repo_id и tokenizer_repo."""
+    if model_path in MODEL_CONFIGS:
+        model_path = MODEL_CONFIGS[model_path]["repo_id"]
+    if tokenizer_path in MODEL_CONFIGS:
+        tokenizer_path = MODEL_CONFIGS[tokenizer_path]["tokenizer_repo"]
+    return model_path, tokenizer_path
+
+
+def _split_hf_repo(path: str):
+    """
+    Split a string that may contain a sub‑folder.
+    Example:
+        "username/repo/subdir" → ("username/repo", "subdir")
+        "username/repo"        → ("username/repo", "")
+    """
+    parts = path.split("/")
+    if len(parts) > 2:
+        repo_id = "/".join(parts[:2])
+        sub_path = "/".join(parts[2:])
     else:
-        raise HTTPException(status_code=422, detail="Provide either reference_audio file or reference_id")
+        repo_id = path
+        sub_path = ""
+    return repo_id, sub_path
 
-    in_temp = None
-    out_path = get_temp_file()
-    try:
-        model, processor = get_vv_model(model_path, tokenizer_path, device)
-        wav, sr = vibevoice_generate(
-            model, processor, text, ref_path,
-            cfg_scale=cfg_scale, steps=steps, temperature=temperature,
-            top_p=top_p, top_k=top_k, device=device
-        )
-        wav1d = wav.T if getattr(wav, 'ndim', 1) > 1 else wav
-        if getattr(wav1d, 'ndim', 1) > 1:
-            wav1d = np.squeeze(wav1d)
-        wav1d = wav1d.astype(np.float32)
-        # Передаем index, если он есть
-        out_wav, out_sr = rvc_infer(wav1d, sr, rvc_model, device=device, index_path=locals().get('rvc_index', None))
-        wavfile.write(out_path, int(out_sr), out_wav.astype(np.float32))
-    except Exception as e:
-        if ref_is_temp and ref_path:
-            try:
-                os.remove(ref_path)
-            except Exception:
-                pass
-        if in_temp:
-            try:
-                os.remove(in_temp)
-            except Exception:
-                pass
-        raise HTTPException(status_code=500, detail=f"Pipeline failed: {e}")
 
-    if background_tasks is not None:
-        if ref_is_temp and ref_path:
-            background_tasks.add_task(os.remove, ref_path)
-        background_tasks.add_task(os.remove, out_path)
-    return FileResponse(out_path, media_type='audio/wav', filename='pipeline.wav')
+def download_if_hf(model_path, tokenizer_path, models_dir="models"):
+    """Если путь похож на huggingface repo (например, repo_id или repo_id:path), скачать в models_dir. Возвращает локальные пути к model_path и tokenizer_path."""
+    os.makedirs(models_dir, exist_ok=True)
+    def is_hf_repo(p):
+        # repo_id или hf://repo_id
+        return (p.startswith("hf://") or (not os.path.exists(p) and len(p.split("/"))==2))
+    # Поддержка коротких имён
+    orig_model_path, orig_tokenizer_path = model_path, tokenizer_path
+    model_path, tokenizer_path = resolve_model_shortcut(model_path, tokenizer_path)
+    # Model
+    subfolder = None
+    # Если model_path был коротким именем, ищем subfolder в конфиге
+    if orig_model_path in MODEL_CONFIGS and "subfolder" in MODEL_CONFIGS[orig_model_path]:
+        subfolder = MODEL_CONFIGS[orig_model_path]["subfolder"]
+    if is_hf_repo(model_path):
+        repo_id_full = model_path.replace("hf://", "")
+        repo_id, sub_path = _split_hf_repo(repo_id_full)
+        local_dir = os.path.join(models_dir, repo_id.replace("/", "__"))
+        download_dir = local_dir
+        if not os.path.exists(local_dir):
+            print(f"Downloading VibeVoice model: {repo_id}...")
+            snapshot_download(repo_id=repo_id, local_dir=local_dir)
+        # Если subfolder указан в конфиге, используем его
+        if subfolder:
+            model_path = os.path.join(local_dir, subfolder)
+        elif sub_path:
+            model_path = os.path.join(local_dir, sub_path)
+        else:
+            model_path = local_dir
+        index_file = os.path.join(model_path, "model.safetensors.index.json")
+    # Tokenizer
+    if is_hf_repo(tokenizer_path):
+        repo_id = tokenizer_path.replace("hf://", "")
+        local_tokenizer = os.path.join(models_dir, repo_id.replace("/", "__")+"_tokenizer.json")
+        if not os.path.exists(local_tokenizer):
+            print(f"Downloading tokenizer.json for {repo_id}...")
+            tokenizer_file_path = hf_hub_download(repo_id=repo_id, filename="tokenizer.json", local_dir=models_dir, local_dir_use_symlinks=False)
+            os.rename(tokenizer_file_path, local_tokenizer)
+        tokenizer_path = local_tokenizer
+    return model_path, tokenizer_path
 
-@app.post('/convert')
-async def convert(
-    audio: UploadFile = File(...),
-    rvc_model: str = Form(...),
-    device: str = Form('cuda'),
-    background_tasks: BackgroundTasks = None
-):
-    # Save input to temp
-    in_path = get_temp_file()
-    with open(in_path, 'wb') as f:
-        f.write(await audio.read())
-    out_path = get_temp_file()
-    try:
-        sr, data = wavfile.read(in_path)
-        if getattr(data, 'ndim', 1) > 1:
-            data = data.T if data.shape[0] < data.shape[1] else data
-            if getattr(data, 'ndim', 1) > 1:
-                data = np.squeeze(data)
-        data = data.astype(np.float32)
-        out_wav, out_sr = rvc_infer(data, sr, rvc_model, device=device)
-        wavfile.write(out_path, int(out_sr), out_wav.astype(np.float32))
-    except Exception as e:
-        try:
-            os.remove(in_path)
-        except Exception:
-            pass
-        raise HTTPException(status_code=500, detail=f"Conversion failed: {e}")
-    if background_tasks is not None:
-        background_tasks.add_task(os.remove, in_path)
-        background_tasks.add_task(os.remove, out_path)
-    return FileResponse(out_path, media_type='audio/wav', filename='converted.wav')
-
-@app.post('/pipeline')
-async def pipeline(
-    text: str = Form(...),
-    reference_audio: UploadFile | None = File(None),
-    reference_id: str | None = Form(None),
-    cfg_scale: float = Form(3.0),
-    temperature: float = Form(1.0),
-    steps: int = Form(42),
-    top_p: float = Form(1.0),
-    top_k: int = Form(0),
-    model_path: str = Form(...),
-    tokenizer_path: str = Form(...),
-    rvc_model: str = Form(...),
-    device: str = Form('cuda'),
-    background_tasks: BackgroundTasks = None
-):
-    # Determine reference source
-    ref_is_temp = False
-    ref_path = None
-    if reference_audio is not None:
-        ref_is_temp = True
-        ref_path = get_temp_file()
-        with open(ref_path, 'wb') as f:
-            f.write(await reference_audio.read())
-    elif reference_id:
-        ref_path, conf_rvc_model, conf_rvc_index = resolve_reference_id(reference_id)
-        if not ref_path or not os.path.exists(ref_path):
-            raise HTTPException(status_code=404, detail="reference_id not found")
-        if conf_rvc_model:
-            rvc_model = conf_rvc_model
-        if conf_rvc_index:
-            rvc_index = conf_rvc_index
+def load_vibevoice(model_path, tokenizer_path, device='cuda'):
+    model_path, tokenizer_path = download_if_hf(model_path, tokenizer_path)
+    tokenizer = VibeVoiceTextTokenizerFast(tokenizer_file=tokenizer_path)
+    audio_processor = VibeVoiceTokenizerProcessor()
+    processor = VibeVoiceProcessor(tokenizer=tokenizer, audio_processor=audio_processor)
+    # torch_dtype: bfloat16 для моделей, где это требуется
+    torch_dtype = None
+    # Проверяем по имени модели или конфигу
+    if ("4bit" in model_path or "bfloat16" in model_path):
+        torch_dtype = torch.bfloat16
+    # Можно добавить проверку по конфигу, если потребуется
+    if torch_dtype:
+        model = VibeVoiceForConditionalGenerationInference.from_pretrained(model_path, device_map=device, torch_dtype=torch_dtype)
     else:
-        raise HTTPException(status_code=422, detail="Provide either reference_audio file or reference_id")
+        model = VibeVoiceForConditionalGenerationInference.from_pretrained(model_path, device_map=device)
+    model.eval()
+    return model, processor
 
-    in_temp = None
-    out_path = get_temp_file()
-    try:
-        model, processor = get_vv_model(model_path, tokenizer_path, device)
-        wav, sr = vibevoice_generate(
-            model, processor, text, ref_path,
-            cfg_scale=cfg_scale, steps=steps, temperature=temperature,
-            top_p=top_p, top_k=top_k, device=device
+def vibevoice_generate(model, processor, text, reference_audio, cfg_scale=1.3, steps=10, temperature=0.95, top_p=0.95, top_k=0, device='cuda', do_sample=True):
+    # Reference audio: path to wav file
+    import soundfile as sf
+    import librosa
+    import numpy as np
+
+    def preprocess_reference_audio(audio_path, target_sr=24000):
+        audio, sr = sf.read(audio_path)
+        if audio.ndim > 1:
+            audio = np.mean(audio, axis=1)
+        if np.any(np.isnan(audio)) or np.any(np.isinf(audio)):
+            audio = np.nan_to_num(audio, nan=0.0, posinf=0.0, neginf=0.0)
+        max_val = np.abs(audio).max()
+        if max_val > 10.0:
+            audio = audio / max_val
+        if sr != target_sr:
+            audio = librosa.resample(audio, orig_sr=sr, target_sr=target_sr)
+            sr = target_sr
+        if np.any(np.isnan(audio)) or np.any(np.isinf(audio)):
+            audio = np.nan_to_num(audio, nan=0.0, posinf=0.0, neginf=0.0)
+        if audio.dtype != np.float32:
+            audio = audio.astype(np.float32)
+        max_abs = np.max(np.abs(audio))
+        if max_abs > 1.01:
+            audio = audio / max_abs
+        return audio, sr
+
+    ref_audio, sr = preprocess_reference_audio(reference_audio, target_sr=24000)
+    # Prepare input for processor
+    inputs = processor(
+        text=[text],
+        voice_samples=[[ref_audio]],
+        padding=True,
+        return_tensors="pt",
+        return_attention_mask=True
+    )
+    # Проверка на NaN/Inf
+    for key, value in inputs.items():
+        if isinstance(value, torch.Tensor):
+            if torch.any(torch.isnan(value)) or torch.any(torch.isinf(value)):
+                print(f"[ERROR] Input tensor '{key}' contains NaN or Inf values")
+                raise ValueError(f"Invalid values in input tensor: {key}")
+    # Перенос на устройство
+    inputs = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in inputs.items()}
+    # Seed (опционально)
+    # set_vibevoice_seed(seed) # Вызывать из main
+    model.set_ddpm_inference_steps(num_steps=steps)
+    generation_config = {'do_sample': do_sample, 'temperature': temperature, 'top_p': top_p}
+    if top_k > 0:
+        generation_config['top_k'] = top_k
+    # Аппаратные оптимизации для eager
+    if device == 'cuda':
+        torch.backends.cuda.matmul.allow_tf32 = False
+        torch.backends.cudnn.allow_tf32 = False
+        torch.cuda.empty_cache()
+        # Не приводим к float, если модель квантована (например, 4bit)
+        is_quantized = hasattr(model, 'quantization_method') or hasattr(model, 'quantize_config') or hasattr(model, 'weight_dtype')
+        if not is_quantized:
+            model = model.float()
+        processed_inputs = {}
+        for k, v in inputs.items():
+            if isinstance(v, torch.Tensor):
+                if v.dtype in [torch.int, torch.long, torch.int32, torch.int64, torch.bool, torch.uint8]:
+                    processed_inputs[k] = v
+                elif "mask" in k.lower():
+                    processed_inputs[k] = v.bool() if v.dtype != torch.bool else v
+                else:
+                    processed_inputs[k] = v.float()
+            else:
+                processed_inputs[k] = v
+        inputs = processed_inputs
+    with torch.no_grad():
+        outputs = model.generate(
+            **inputs, max_new_tokens=None, cfg_scale=cfg_scale,
+            tokenizer=processor.tokenizer, generation_config=generation_config,
+            verbose=False
         )
-        wav1d = wav.T if getattr(wav, 'ndim', 1) > 1 else wav
-        if getattr(wav1d, 'ndim', 1) > 1:
-            wav1d = np.squeeze(wav1d)
-        wav1d = wav1d.astype(np.float32)
-        # Передаем index, если он есть
-        out_wav, out_sr = postprocess_rvc(wav1d, sr, rvc_model, device=device, index_path=locals().get('rvc_index', None))
-        wavfile.write(out_path, int(out_sr), out_wav.astype(np.float32))
-    except Exception as e:
-        if ref_is_temp and ref_path:
-            try:
-                os.remove(ref_path)
-            except Exception:
-                pass
-        if in_temp:
-            try:
-                os.remove(in_temp)
-            except Exception:
-                pass
-        raise HTTPException(status_code=500, detail=f"Pipeline failed: {e}")
-
-    if background_tasks is not None:
-        if ref_is_temp and ref_path:
-            background_tasks.add_task(os.remove, ref_path)
-        background_tasks.add_task(os.remove, out_path)
-    return FileResponse(out_path, media_type='audio/wav', filename='final.wav')
+    wav_tensor = outputs.speech_outputs[0].detach().cpu()
+    if wav_tensor.dtype == torch.bfloat16:
+        wav_tensor = wav_tensor.to(torch.float32)
+    wav = wav_tensor.numpy()
+    return wav, 24000
