@@ -192,7 +192,7 @@ async def list_rvc_models():
         })
     return {"rvc_models": result}
 
-@server.get("/healthcheck", tags=["Service"])
+@server.get("/v1/healthcheck", tags=["Service"])
 async def healthcheck():
     """Проверка работоспособности сервера."""
     return {"status": "ok"}
