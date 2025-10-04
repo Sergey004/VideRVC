@@ -1,4 +1,4 @@
-# VibeVoice + RVC Speech Generation Service
+# VibeVoice + RVC Speech Generation Service (Obsolete)
 
 ## Description
 
