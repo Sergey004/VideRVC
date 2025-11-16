@@ -1,4 +1,4 @@
-# VibeVoice + RVC Speech Generation Service (Obsolete)
+# VibeVoice + RVC Speech Generation Service (Obsolete for now)
 
 ## Description
 
@@ -11,7 +11,7 @@ Local CLI and REST API for text-to-speech generation using VibeVoice and optiona
 Example of execution:
 
 ```
- main.py --text "Hello world" --reference-audio reference.wav --model-path 1.5B --out output.wav [--rvc-model rvc.pth]
+ cli.py --text "Hello world" --reference-audio reference.wav --model-path 1.5B --out output.wav [--rvc-model rvc.pth]
 ```
 
 **Parameters:**

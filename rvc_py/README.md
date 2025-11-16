@@ -1,32 +1,32 @@
 # rvc_py
 
-Минималистичная реализация RVC (Retrieval-based Voice Conversion) для Python 3.11, адаптированная из https://github.com/daswer123/rvc-python.
+Minimalist RVC (Retrieval-based Voice Conversion) implementation for Python 3.11, adapted from https://github.com/daswer123/rvc-python.
 
-- Совместимо с основным проектом VibeVoice.
-- Не требует сторонних UI.
-- Для интеграции используйте функцию rvc_infer из main.py.
+- Compatible with the main VibeVoice project.
+- No third-party UI required.
+- For integration, use the rvc_infer function from main.py.
 
-## Особенности инференса (адаптировано из WebUI RVC)
+## Inference Features (adapted from RVC WebUI)
 
-- **Поддержка sample rate:** 32kHz, 40kHz, 48kHz (определяется по модели, параметр sr).
-- **Параметры инференса:** pitch shift, index rate (retrieval blending), f0 method (rmvpe/torchcrepe/parselmouth/pm/dio), hop size, block size, auto predict f0, fp16/half-precision.
-- **Векторный поиск:** поддержка Faiss для retrieval-based voice conversion (ускоряет и улучшает качество).
-- **Гибкая обработка аудио:** автоматическое определение sample rate, hop size, block size.
-- **Архитектура:** модульная — отдельные модули для препроцессинга, извлечения фичей, инференса, поиска.
-- **Зависимости:** torch, faiss, librosa, soundfile, numpy, torchcrepe, parselmouth, onnxruntime, pyworld, scipy.
+- **Sample rate support:** 32kHz, 40kHz, 48kHz (determined by model, sr parameter).
+- **Inference parameters:** pitch shift, index rate (retrieval blending), f0 method (rmvpe/torchcrepe/parselmouth/pm/dio), hop size, block size, auto predict f0, fp16/half-precision.
+- **Vector search:** Faiss support for retrieval-based voice conversion (accelerates and improves quality).
+- **Flexible audio processing:** automatic sample rate, hop size, block size detection.
+- **Architecture:** modular — separate modules for preprocessing, feature extraction, inference, and search.
+- **Dependencies:** torch, faiss, librosa, soundfile, numpy, torchcrepe, parselmouth, onnxruntime, pyworld, scipy.
 
-## Установка зависимостей
+## Installing Dependencies
 
 ```
 pip install torch numpy librosa soundfile scipy torchcrepe faiss-cpu parselmouth onnxruntime pyworld
 ```
 
-## Использование
+## Usage
 
-Импортируйте rvc_infer из rvc_py/rvc_infer.py и вызывайте как post-process.
+Import rvc_infer from rvc_py/rvc_infer.py and call it as a post-process.
 
 ---
 
-Исходный репозиторий: https://github.com/daswer123/rvc-python
+Original repository: https://github.com/daswer123/rvc-python
 WebUI: https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI
-Адаптация: Python 3.11, без UI, только инференс.
+Adaptation: Python 3.11, no UI, inference only.
