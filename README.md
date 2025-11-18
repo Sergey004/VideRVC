@@ -1,4 +1,4 @@
-# VibeVoice + RVC Speech Generation Service (Obsolete for now)
+# VibeVoice + RVC Speech Generation Service (Obsolete for now, no LoRA support yet)
 
 ## Description
 
@@ -24,7 +24,7 @@ Example of execution:
 
 ---
 
-## REST API (FastAPI) (WIP)
+## REST API (FastAPI)
 
 Starting the server:
 
@@ -46,6 +46,10 @@ For request examples, see Swagger UI: http://localhost:8000/docs
 - Python 3.10+
 - CUDA (for acceleration, optional)
 - ffmpeg
+
+
+---
+Tested on Win 11 + RTX 3090 and Ubuntu Server 24.04 LTS + RTX 3060 (4-bit Quant)
 
 ---
 
