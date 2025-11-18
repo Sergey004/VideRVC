@@ -1,6 +1,6 @@
 # rvc_py
 
-Minimalist RVC (Retrieval-based Voice Conversion) implementation for Python 3.11, adapted from https://github.com/daswer123/rvc-python.
+Minimalist RVC (Retrieval-based Voice Conversion) implementation for Python 3.11, adapted from <https://github.com/daswer123/rvc-python>.
 
 - Compatible with the main VibeVoice project.
 - No third-party UI required.
@@ -17,7 +17,7 @@ Minimalist RVC (Retrieval-based Voice Conversion) implementation for Python 3.11
 
 ## Installing Dependencies
 
-```
+```shell
 pip install torch numpy librosa soundfile scipy torchcrepe faiss-cpu parselmouth onnxruntime pyworld
 ```
 
@@ -27,6 +27,6 @@ Import rvc_infer from rvc_py/rvc_infer.py and call it as a post-process.
 
 ---
 
-Original repository: https://github.com/daswer123/rvc-python
-WebUI: https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI
+Original repository: <https://github.com/daswer123/rvc-python>
+WebUI: <https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI>
 Adaptation: Python 3.11, no UI, inference only.
