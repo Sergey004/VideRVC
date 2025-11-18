@@ -1,6 +1,10 @@
 torch
 numpy
-soundfile
 librosa
-
-requests
+soundfile
+scipy
+torchcrepe
+faiss-cpu
+parselmouth
+onnxruntime
+pyworld
