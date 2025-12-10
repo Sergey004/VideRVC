@@ -17,3 +17,4 @@ python-multipart
 bitsandbytes
 hf_xet
 faiss-cpu
+gradio>=4.35.0

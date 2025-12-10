@@ -66,6 +66,8 @@ from vibevoice.modular.modular_vibevoice_text_tokenizer import VibeVoiceTextToke
 
 import torch
 import numpy as np
+import requests
+import gradio as gr
 
 # Ленивая загрузка RVC
 def get_rvc_infer():
@@ -192,6 +194,16 @@ async def list_rvc_models():
         })
     return {"rvc_models": result}
 
+
+# --- Эндпоинт со списком моделей (короткие имена из model_configs.json) ---
+@server.get("/models", tags=["Files"])
+async def list_models():
+    try:
+        keys = list(MODEL_CONFIGS.keys())
+    except Exception:
+        keys = []
+    return {"models": sorted(keys)}
+
 @server.get("/v1/healthcheck", tags=["Service"])
 async def healthcheck():
     """Проверка работоспособности сервера."""
@@ -305,13 +317,9 @@ class OpenAITTSRequest(BaseModel):
     rvc_index_rate: Optional[float] = None
     # Можно добавить другие параметры OpenAI TTS
 
-@server.post("/v1/audio/speech", tags=["TTS"])
-async def openai_tts(
-    request: OpenAITTSRequest = Body(...),
-    api_key: str = Depends(get_api_key),
-):
-    """OpenAI-совместимый TTS эндпоинт."""
-    logger.info(f"/v1/audio/speech called, model={request.model}, voice={request.voice}")
+def _process_tts_request(request: OpenAITTSRequest):
+    """Общая логика генерации речи, используется UI и API эндпоинтами."""
+    logger.info(f"TTS request: model={request.model}, voice={request.voice}")
     temp_files = []
     try:
         # Маппинг параметров OpenAI -> VibeVoice
@@ -435,8 +443,26 @@ async def openai_tts(
         logger.error(f"HTTPException: {e.detail}")
         return JSONResponse(status_code=e.status_code, content={"error": {"code": "http_exception", "message": e.detail}})
     except Exception as e:
-        logger.exception("Unexpected error in /v1/audio/speech")
+        logger.exception("Unexpected error in TTS processing")
         return JSONResponse(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, content={"error": {"code": "internal_error", "message": str(e)}})
+
+
+@server.post("/v1/audio/speech", tags=["TTS"])
+async def openai_tts(
+    request: OpenAITTSRequest = Body(...),
+    api_key: str = Depends(get_api_key),
+):
+    """OpenAI-совместимый TTS эндпоинт (требует API-ключ)."""
+    return _process_tts_request(request)
+
+
+# Эндпоинт для UI без авторизации
+@server.post("/ui/audio/speech", tags=["TTS"])
+async def openai_tts_ui(
+    request: OpenAITTSRequest = Body(...),
+):
+    """TTS эндпоинт для UI (без API-ключа)."""
+    return _process_tts_request(request)
 
 
 VOICES_TABLE_PATH = os.path.join(os.getcwd(), "voices", "voices.json")
@@ -512,6 +538,142 @@ def auto_populate_voices():
 @server.on_event("startup")
 async def startup_event():
     auto_populate_voices()
+
+
+# --- Простой Gradio UI, смонтированный в /ui ---
+def build_gradio_ui():
+    def check_server(api_key: str):
+        headers = {"x-api-key": api_key} if api_key else {}
+        try:
+            r = requests.get("http://localhost:8000/v1/healthcheck", headers=headers, timeout=5)
+            if r.ok:
+                return f"Healthcheck OK: {r.json()}"
+            return f"Healthcheck failed: {r.status_code} - {r.text}"
+        except Exception as e:
+            return f"Healthcheck error: {e}"
+
+    def fetch_lists(api_key: str):
+        headers = {"x-api-key": api_key} if api_key else {}
+        voices = []
+        models = []
+        try:
+            r = requests.get("http://localhost:8000/voices/table", headers=headers, timeout=8)
+            if r.ok:
+                data = r.json()
+                if isinstance(data, dict):
+                    if "voices" in data and isinstance(data["voices"], dict):
+                        voices = sorted(list(data["voices"].keys()))
+                    else:
+                        voices = sorted([k for k in data.keys()])
+        except Exception:
+            pass
+        if not voices:
+            try:
+                r = requests.get("http://localhost:8000/voices", headers=headers, timeout=8)
+                if r.ok:
+                    data = r.json()
+                    items = data.get("voices", []) if isinstance(data, dict) else []
+                    voices = sorted([it.get("name") for it in items if isinstance(it, dict) and it.get("type") == "file"]) or []
+            except Exception:
+                pass
+        try:
+            r = requests.get("http://localhost:8000/models", headers=headers, timeout=5)
+            if r.ok:
+                data = r.json()
+                models = data.get("models", []) if isinstance(data, dict) else []
+        except Exception:
+            pass
+        return gr.update(choices=voices, value=(voices[0] if voices else None)), gr.update(choices=models, value=(models[0] if models else None))
+
+    def synthesize(
+        api_key: str,
+        model: str,
+        tokenizer_path: str,
+        input_text: str,
+        voice: str,
+        device: str = "cuda",
+        seed: int = 0,
+        rvc_model: str | None = None,
+        rvc_index: str | None = None,
+        rvc_index_rate: float | None = None,
+    ):
+        if not input_text or not voice or not model or not tokenizer_path:
+            return None, "Please fill model, tokenizer_path, voice and input text."
+        # Используем UI-эндпоинт без авторизации
+        url = "http://localhost:8000/ui/audio/speech"
+        headers = {"Content-Type": "application/json"}
+        payload = {
+            "model": model,
+            "tokenizer_path": tokenizer_path,
+            "input": input_text,
+            "voice": voice,
+            "device": device,
+            "seed": seed,
+        }
+        if rvc_model:
+            payload["rvc_model"] = rvc_model
+        if rvc_index:
+            payload["rvc_index"] = rvc_index
+        if rvc_index_rate is not None:
+            payload["rvc_index_rate"] = rvc_index_rate
+        try:
+            resp = requests.post(url, json=payload, headers=headers, timeout=120)
+            if not resp.ok:
+                try:
+                    return None, f"HTTP {resp.status_code}: {resp.json()}"
+                except Exception:
+                    return None, f"HTTP {resp.status_code}: {resp.text}"
+            import tempfile
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+                tmp.write(resp.content)
+                wav_path = tmp.name
+            return wav_path, "Success"
+        except Exception as e:
+            return None, f"Request error: {e}"
+
+    with gr.Blocks(title="VibeVoice TTS – API UI") as demo:
+        gr.Markdown("""
+        ### VibeVoice TTS (UI)
+        This UI is served by the same FastAPI server.
+        It uses a no-auth UI endpoint for synthesis.
+        """)
+        api_key = gr.Textbox(label="API Key (optional, for API calls)", value=os.getenv("API_KEY", ""), type="password")
+        check_btn = gr.Button("Check Server")
+        check_out = gr.Textbox(label="Healthcheck Result")
+        with gr.Row():
+            model = gr.Dropdown(label="Model", choices=[], value=None)
+            tokenizer_path = gr.Textbox(label="Tokenizer Path", value="Qwen/Qwen2.5-7B")
+            device = gr.Radio(choices=["cuda", "cpu"], value="cuda", label="Device")
+            seed = gr.Number(label="Seed", value=0)
+        input_text = gr.Textbox(label="Text", value="Hello, this is a test speech.", lines=3)
+        voice = gr.Dropdown(label="Voice (from voices table)", choices=[], value=None)
+        refresh_lists = gr.Button("Refresh Voices/Models")
+        with gr.Accordion("Optional RVC settings", open=False):
+            rvc_model = gr.Textbox(label="RVC Model (.pth)")
+            rvc_index = gr.Textbox(label="RVC Index (.index)")
+            rvc_index_rate = gr.Slider(label="RVC Index Rate", minimum=0.0, maximum=1.0, value=0.0, step=0.01)
+        synth_btn = gr.Button("Synthesize")
+        audio_out = gr.Audio(label="Output Audio", type="filepath")
+        status_out = gr.Textbox(label="Status / Errors")
+
+        demo.load(fetch_lists, inputs=[api_key], outputs=[voice, model])
+        check_btn.click(check_server, inputs=[api_key], outputs=check_out)
+        refresh_lists.click(fetch_lists, inputs=[api_key], outputs=[voice, model])
+        synth_btn.click(
+            synthesize,
+            inputs=[api_key, model, tokenizer_path, input_text, voice, device, seed, rvc_model, rvc_index, rvc_index_rate],
+            outputs=[audio_out, status_out],
+        )
+    return demo
+
+
+try:
+    ui_blocks = build_gradio_ui()
+    from gradio import mount_gradio_app
+    server = mount_gradio_app(server, ui_blocks, path="/ui")
+except Exception:
+    # Если Gradio недоступен, просто пропускаем UI
+    pass
 
 from pydantic import BaseModel
 
