@@ -631,7 +631,8 @@ def build_gradio_ui():
         except Exception as e:
             return None, f"Request error: {e}"
 
-    with gr.Blocks(title="VibeVoice TTS – API UI") as demo:
+    with gr.Blocks(title="VibeVoice TTS – API UI", analytics_enabled = False) as demo:
+        
         gr.Markdown("""
         ### VibeVoice TTS (UI)
         This UI is served by the same FastAPI server.

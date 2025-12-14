@@ -11,8 +11,8 @@ SERVER_URL = "http://localhost:8000/v1/audio/speech"
 payload = {
     "model": "1.5B",  # Замените на имя вашей модели
     "tokenizer_path": "Qwen/Qwen2.5-7B",
-    "input": "Hello, this is a test speech.",
-    "voice": "PhoneGuy_FNAF1_01"   # Замените на имя вашего голоса
+    "input": "Broken shit",
+    "voice": "Atreyu_Alcantar"   # Замените на имя вашего голоса
 }
 
 # Заголовки запроса, включая API-ключ
